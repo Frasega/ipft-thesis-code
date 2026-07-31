@@ -87,6 +87,13 @@ class ScenarioPreset:
                                            # to ~8 GB/run otherwise)
     corridor_links_file: str | None = None  # link set for corridor-local Term A
                                             # and speed metrics (None = disabled)
+    bus_stop_links_file: str | None = None  # dwell-in-MATSim: the bus-stop cost
+                                            # link set (7 car-mode line-44 stop
+                                            # links + 1-hop upstream minus the
+                                            # van corridor), written by
+                                            # make_bus_stop_links.py. Van relief
+                                            # and bus-stop queueing are measured
+                                            # on DISJOINT sets, reported apart.
 
     @property
     def n_freight_units_real(self) -> float:
@@ -186,6 +193,7 @@ def _rotterdam() -> ScenarioPreset:
         add_freight_mode=False,
         write_emission_events=False,
         corridor_links_file="scenarios/ipft_rotterdam/corridor_links.txt",
+        bus_stop_links_file="scenarios/ipft_rotterdam/bus_stop_links.txt",
     )
 
 

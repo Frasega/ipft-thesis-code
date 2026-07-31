@@ -30,6 +30,24 @@ Prereq: BOTH longbase runs DONE:
 Run from project root:  python python_pipeline/make_rotterdam_warm_scenarios.py
   [--congestion peak|offpeak|both]   (default both; use 'peak' to start the peak
                                        half while the offpeak longbase still runs)
+
+DWELL-IN-MATSIM variant (--dwell-tag blocking|bay): every config points at the
+per-alpha schedule from make_dwell_schedules.py, so the freight handover time is
+simulated (minimumStopDuration) and the stopped bus holds the traffic lane
+(isBlocking). Configs are named config_RDWELL_* and write to a SEPARATE output
+tree, so the pre-dwell surface stays untouched:
+
+    python python_pipeline/make_dwell_schedules.py --blocking true
+    python python_pipeline/make_rotterdam_warm_scenarios.py --dwell-tag blocking
+    python python_pipeline/scenario_runner.py --scenario rotterdam --filter RDWELL ...
+    python python_pipeline/rotterdam_surface_robust.py \
+        --runs-dir D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs \
+        --out output/sensitivity_rotterdam_dwell_blocking --dwell-in-matsim
+
+The alpha=0 BASELINE gets the same variant schedule (dwell 0 s, but isBlocking
+set exactly as in the scenarios). That is deliberate: the bus stops for
+passengers and blocks the lane on BOTH sides, so that part cancels in
+baseline - scenario and what is measured is only the extra freight seconds.
 """
 import argparse
 import math
@@ -88,11 +106,51 @@ def freeze_replanning_rotterdam(tree: ET.ElementTree) -> ET.ElementTree:
     return tree
 
 
+def dwell_schedule_for(alpha: float, tag: str, schedules_dir: Path) -> str:
+    """Absolute path to the per-alpha dwell schedule; fails loudly if missing
+    (a silent fall-back to the plain schedule would produce runs that look like
+    dwell runs but contain no dwell at all)."""
+    astr = f"{int(round(alpha * 100)):03d}"
+    path = schedules_dir / f"ptSchedule_dwell_alpha{astr}_{tag}.xml.gz"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found — run 'python python_pipeline/make_dwell_schedules.py "
+            f"--blocking {'true' if tag == 'blocking' else 'false'}' first.")
+    return str(path.resolve())
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--congestion", choices=["peak", "offpeak", "both"], default="both")
+    ap.add_argument("--dwell-tag", choices=["blocking", "bay"], default=None,
+                    help="Generate the dwell-in-MATSim variant: point every config at "
+                         "the per-alpha schedule (minimumStopDuration + isBlocking). "
+                         "blocking = bus holds the lane (headline), bay = pulls off "
+                         "the road (policy sensitivity). Omit for the pre-dwell runs.")
+    ap.add_argument("--dwell-schedules-dir", default=None,
+                    help="Default: scenarios/ipft_rotterdam/dwell_schedules")
+    ap.add_argument("--output-base-dir", default=None,
+                    help="Default: preset dir, or "
+                         "D:/TesiOutputs/ipft_rotterdam_dwell_<tag>_runs with --dwell-tag")
     args = ap.parse_args()
     levels = ["peak", "offpeak"] if args.congestion == "both" else [args.congestion]
+
+    dwell_tag = args.dwell_tag
+    sched_dir = (Path(args.dwell_schedules_dir) if args.dwell_schedules_dir
+                 else Path(preset.base_config).parent / "dwell_schedules")
+    # The tag MUST be in the config name: blocking and bay write to different
+    # output trees but would otherwise share config file names and overwrite
+    # each other. "--filter RDWELL" still matches both variants.
+    cfg_prefix = f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM"
+    if args.output_base_dir:
+        out_base = Path(args.output_base_dir)
+    elif dwell_tag:
+        out_base = Path("D:/TesiOutputs") / f"ipft_rotterdam_dwell_{dwell_tag}_runs"
+    else:
+        out_base = Path(preset.output_base_dir)
+    if dwell_tag:
+        print(f"[dwell] variant={dwell_tag}  schedules={sched_dir}\n"
+              f"[dwell] output tree={out_base}  configs=config_{cfg_prefix}_*")
 
     N = preset.n_freight_units_sim          # 470 simulated parcels
     runs = []
@@ -116,25 +174,33 @@ def main() -> None:
                         van_mode=preset.van_mode, spread_minutes=preset.van_spread_minutes,
                         n_vans_override=n_tours,
                     )
+                sched = (dwell_schedule_for(alpha, dwell_tag, sched_dir)
+                         if dwell_tag else None)
                 for seed in RANDOM_SEEDS:
                     run = f"alpha{astr}_{congestion}_{weight_regime}_seed{seed}"
-                    out = str((Path(preset.output_base_dir) / run).resolve())
+                    out = str((out_base / run).resolve())
                     tree = patch_config(
                         base_config_path=preset.base_config,
                         plans_file=str(Path(plans_path).resolve()),
                         output_dir=out, seed=seed, last_iteration=WARM_ITERS, preset=preset,
+                        transit_schedule_file=sched,
                     )
                     freeze_replanning_rotterdam(tree)
                     ET.indent(tree, space="  ")
-                    cfg = str(GEN / f"config_RWARM_{run}.xml")
+                    cfg = str(GEN / f"config_{cfg_prefix}_{run}.xml")
                     _write_config_with_doctype(tree, cfg)
                     runs.append(run)
+                dwell_note = (f" dwell={Path(sched).name}" if sched else "")
                 print(f"  alpha={astr} {congestion:7s} {weight_regime:6s} "
-                      f"(C_van={cvan}) -> {n_tours} van-tours")
-    print(f"\nGenerated {len(runs)} Rotterdam warm configs (config_RWARM_*). Run with:\n"
-          f"  scenario_runner.py --scenario rotterdam --filter RWARM --heap <fit> --skip-existing\n"
-          f"then sensitivity_surface.py --scenario rotterdam "
-          f"--runs-dir {preset.output_base_dir} --per-weight-runs --out output/sensitivity_rotterdam")
+                      f"(C_van={cvan}) -> {n_tours} van-tours{dwell_note}")
+    surface_out = (f"output/sensitivity_rotterdam_dwell_{dwell_tag}" if dwell_tag
+                   else "output/sensitivity_rotterdam")
+    dwell_flag = " --dwell-in-matsim" if dwell_tag else ""
+    print(f"\nGenerated {len(runs)} Rotterdam warm configs (config_{cfg_prefix}_*). Run with:\n"
+          f"  scenario_runner.py --scenario rotterdam --filter {cfg_prefix} --heap <fit> "
+          f"--skip-existing\n"
+          f"then rotterdam_surface_robust.py --runs-dir {out_base} "
+          f"--out {surface_out}{dwell_flag}")
 
 
 if __name__ == "__main__":

@@ -2,17 +2,31 @@
 Corridor-local congestion metrics for Term A support.
 
 The city-wide CO2 delta (Term A) dilutes a one-corridor treatment over the
-whole MRDH region: the signal lives on ~1,400 links, the seed noise on 657k.
-These metrics restrict the measurement to the corridor link set
-(scenarios/ipft_rotterdam/corridor_links.txt — line-44 route links + car links
-within 250 m), and measure congestion DIRECTLY via speeds, independently of the
-HBEFA translation:
+whole MRDH region: the signal lives on 163 links, the seed noise on 657k.
+These metrics restrict the measurement to a link set and measure congestion
+DIRECTLY via speeds, independently of the HBEFA translation:
 
-  - background vehicle-hours on corridor links (the congestion quantity)
-  - length-weighted mean background speed on corridor links
+  - background vehicle-hours on those links (the congestion quantity)
+  - length-weighted mean background speed on those links
 
 Both are computed per run from the v_mean DataFrame that parse_events already
 produces, and differenced baseline − scenario with paired seeds.
+
+The functions are link-set agnostic; run_pipeline calls them on three sets:
+
+  corridor_links.txt        the 163 links the vans actually drive
+  corridor minus bus stops  ROW 1 of Term A — the van relief   (expected +)
+  bus_stop_links.txt        ROW 2 of Term A — buses held at the
+                            stops with isBlocking=true          (expected −)
+
+Rows 1 and 2 are disjoint by construction (make_bus_stop_links.py) and both use
+the same baseline − scenario convention, so the bus cost comes out NEGATIVE on
+its own. Never flip its sign by hand: Term A = row 1 + row 2, reported apart.
+
+Row 1 + row 2 covers 178 links (160 + 18) — MORE than the 163-link corridor,
+because 15 of the upstream links where the bus queue forms lie outside it. So
+the split total is not directly comparable with the historical corridor-only
+figure, and their difference is not the bus cost.
 """
 
 from __future__ import annotations

@@ -98,6 +98,8 @@ def build_surface(
     van_load_factor: float | None = None,
     recon_seed: int = 42,
     extra_dwell_per_unit_s: float | None = None,
+    dwell_in_matsim: bool = False,
+    resume: bool = True,
 ) -> pd.DataFrame:
     """
     For every (α, congestion, weight, seed) combination:
@@ -116,9 +118,25 @@ def build_surface(
     runs_dir_path = Path(runs_dir)
     out_dir_path = Path(out_dir)
     out_dir_path.mkdir(parents=True, exist_ok=True)
+    long_csv = out_dir_path / "results_long.csv"
 
     all_seeds = sorted(set(RANDOM_SEEDS) | set(BASELINE_EXTRA_SEEDS))
+
+    # Resume support. A full Rotterdam sweep is ~60 event parses (hours), so it
+    # must survive an interrupted laptop: every finished cell is appended to
+    # results_long.csv immediately, and a re-run skips what is already there.
+    # Delete results_long.csv to force a clean recomputation (which is what you
+    # want after a change that moves the numbers, e.g. the V_mean correction).
     rows = []
+    done: set = set()
+    if resume and long_csv.exists():
+        prev = pd.read_csv(long_csv)
+        rows = prev.to_dict("records")
+        done = {(str(r["congestion"]), str(r["weight_regime"]),
+                 int(r["seed"]), round(float(r["alpha"]), 4))
+                for _, r in prev.iterrows()}
+        if verbose:
+            print(f"[resume] {len(done)} cells already in {long_csv} — skipping them")
 
     preset_kwargs = {}
     if preset is not None:
@@ -129,13 +147,18 @@ def build_surface(
             bus_id_allowlist=preset.term_c_bus_ids,
             hb_route_prefixes=preset.hb_route_prefixes,
             corridor_links_file=preset.corridor_links_file,
+            bus_stop_links_file=preset.bus_stop_links_file,
         )
 
     KEEP = ("term_a_kg", "term_b_kg", "term_c_kg", "net_saving_kg_per_day",
             "net_robust_kg_per_day", "feasible", "binding_constraint", "hbefa_enabled",
             "term_b_proxy", "consolidated", "parcels_per_tour", "tours_baseline",
             "tours_scenario", "alpha_max", "term_a_corridor_kg",
-            "corridor_delta_vehicle_hours", "corridor_speed_change_ms")
+            "corridor_delta_vehicle_hours", "corridor_speed_change_ms",
+            "term_a_vans_kg", "term_a_busstop_kg",
+            "vanrow_delta_vehicle_hours", "vanrow_speed_change_ms",
+            "busstop_delta_vehicle_hours", "busstop_speed_change_ms",
+            "dwell_in_matsim", "idle_mode", "extra_dwell_s_per_trip")
 
     # (regime, weight-in-run-name) pairs to iterate. per_weight → each regime has its own
     # run dirs; else a single set of runs (weight=None in the name) reused for all regimes.
@@ -154,6 +177,8 @@ def build_surface(
 
                 for alpha in ALPHA_VALUES:
                     if alpha > 0 and seed not in RANDOM_SEEDS:
+                        continue
+                    if (congestion, regime, seed, round(alpha, 4)) in done:
                         continue
                     scenario_dir = runs_dir_path / _run_name(alpha, congestion, seed, wtag)
                     scenario_events = _find_events(scenario_dir)
@@ -175,6 +200,7 @@ def build_surface(
                             van_load_factor=van_load_factor,
                             recon_seed=recon_seed,
                             extra_dwell_per_unit_s=extra_dwell_per_unit_s,
+                            dwell_in_matsim=dwell_in_matsim,
                             verbose=False,
                             **preset_kwargs,
                         )
@@ -191,17 +217,21 @@ def build_surface(
                         **{k: v for k, v in result.items() if k in KEEP},
                     }
                     rows.append(row)
+                    # Persist after EVERY cell: an interrupted sweep resumes
+                    # from here instead of losing hours of parsing.
+                    pd.DataFrame(rows).to_csv(long_csv, index=False)
                     if verbose:
                         print(f"  alpha={alpha:.0%} {congestion:<7s} {regime:<6s} seed={seed}  "
-                              f"net={result['net_saving_kg_per_day']:+.2f} kg/day")
+                              f"net={result['net_saving_kg_per_day']:+.2f} kg/day "
+                              f"[{len(rows)} cells written]", flush=True)
 
     if not rows:
         raise RuntimeError("No scenarios processed. Check runs-dir + n-freight.")
 
     df = pd.DataFrame(rows)
-    df.to_csv(out_dir_path / "results_long.csv", index=False)
+    df.to_csv(long_csv, index=False)
     if verbose:
-        print(f"\nWrote {len(df)} rows -> {out_dir_path/'results_long.csv'}")
+        print(f"\nWrote {len(df)} rows -> {long_csv}")
 
     # Collapse seeds → mean ± std for each (α, congestion, weight) cell
     agg_spec = dict(
@@ -222,7 +252,12 @@ def build_surface(
     for col, label in [("alpha_max", "alpha_max_mean"),
                        ("term_a_corridor_kg", "term_a_corridor_mean"),
                        ("corridor_delta_vehicle_hours", "corridor_dvh_mean"),
-                       ("corridor_speed_change_ms", "corridor_dspeed_mean")]:
+                       ("corridor_speed_change_ms", "corridor_dspeed_mean"),
+                       ("term_a_vans_kg", "term_a_vans_mean"),
+                       ("term_a_busstop_kg", "term_a_busstop_mean"),
+                       ("vanrow_delta_vehicle_hours", "vanrow_dvh_mean"),
+                       ("busstop_delta_vehicle_hours", "busstop_dvh_mean"),
+                       ("extra_dwell_s_per_trip", "extra_dwell_s_mean")]:
         if col in df.columns and df[col].notna().any():
             agg_spec[label] = (col, "mean")
             agg_spec[label.replace("_mean", "_std")] = (col, "std")
@@ -326,6 +361,19 @@ def main() -> None:
     p.add_argument("--extra-dwell-s", type=float, default=None,
                    help="Per-parcel freight-handling dwell seconds (Ch4 layer-3 sweep, "
                         "TCQSM range 3-15 s). Default: parameters.EXTRA_DWELL_PER_UNIT_S.")
+    p.add_argument("--no-resume", action="store_true",
+                   help="Ignore an existing results_long.csv and recompute every cell. "
+                        "By default the sweep RESUMES: cells already in that file are "
+                        "skipped, so an interrupted run continues instead of restarting. "
+                        "Note: after a change that moves the numbers you must delete the "
+                        "file (or pass this) — otherwise stale cells survive.")
+    p.add_argument("--dwell-in-matsim", action="store_true",
+                   help="The runs simulate the freight dwell in the schedule "
+                        "(make_dwell_schedules.py): Term C idle uses the MEASURED "
+                        "extra standing (scenario − baseline fleet mean) instead of "
+                        "the a-priori convention. ONLY for runs generated with the "
+                        "dwell schedules — refuses (raises) on runs without "
+                        "facility standing data.")
     args = p.parse_args()
     _idle_map = {"low": VAN_STOP_IDLE_LOW_S, "high": VAN_STOP_IDLE_HIGH_S, "zero": 0.0}
     van_stop_idle_s = _idle_map[args.van_stop_idle]
@@ -347,6 +395,8 @@ def main() -> None:
         van_load_factor=van_load_factor,
         recon_seed=args.recon_seed,
         extra_dwell_per_unit_s=args.extra_dwell_s,
+        dwell_in_matsim=args.dwell_in_matsim,
+        resume=not args.no_resume,
     )
 
 

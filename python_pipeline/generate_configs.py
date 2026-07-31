@@ -112,6 +112,7 @@ def patch_config(
     preset: ScenarioPreset,
     flow_capacity_factor: float | None = None,
     storage_capacity_factor: float | None = None,
+    transit_schedule_file: str | None = None,
 ) -> ET.ElementTree:
     """
     Return a modified copy of the base config XML tree with:
@@ -122,6 +123,10 @@ def patch_config(
       - emissions module (HBEFA average factors) added
       - qsim vehiclesSource=modeVehicleTypesFromVehiclesData + vehicles file
       - capacity factors set (defaults from the scenario preset)
+      - transitScheduleFile overridden when transit_schedule_file is given
+        (dwell-in-MATSim: the per-alpha schedule from make_dwell_schedules.py).
+        Pass an ABSOLUTE path — it is applied after the ../ re-prefixing, so a
+        relative one would be resolved against generated/ and break.
     """
     tree = ET.parse(base_config_path)
     root = tree.getroot()
@@ -147,6 +152,15 @@ def patch_config(
                     val = p.get("value", "")
                     if val and not val.startswith(("../", "/", "C:", "D:")):
                         p.set("value", f"../{val}")
+
+    # ── Transit schedule override (dwell-in-MATSim per-alpha schedules) ───
+    # Applied AFTER the ../ re-prefixing above so an absolute path survives.
+    if transit_schedule_file is not None:
+        transit_mod = _get_module_exact(root, "transit")
+        if transit_mod is None:
+            raise ValueError(f"No transit module in {base_config_path} — cannot "
+                             f"override transitScheduleFile")
+        _set_param(transit_mod, "transitScheduleFile", transit_schedule_file)
 
     # ── Global: seed ──────────────────────────────────────────────────────
     global_mod = _get_module_exact(root, "global")

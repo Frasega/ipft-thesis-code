@@ -168,15 +168,16 @@ def c_van(weight_per_unit_kg: float,
 # ── Passengers ────────────────────────────────────────────────────────────
 AVG_PERSON_WEIGHT_KG = 75               # EN 13035-1 / NEN-EN 12831 standard
 
-# TODO (deferred 2026-05-26): MATSim does NOT emit PersonEntersVehicle for the
-# transit driver (handled via TransitDriverStarts), so our pax_count from
-# parse_events misses the driver's mass on every bus link. M_bus(link) should be:
-#   tare + (n_pax + 1) × 75 + freight_remaining   # +1 for the driver
-# Impact on toy: 75 kg / 10882 kg = 0.7% bias, trivial.
-# Impact on Rotterdam: 75 kg / (10882 + 30×75) ≈ 0.6%, still trivial.
-# Fix when porting to Rotterdam: add +AVG_PERSON_WEIGHT_KG inside compute_mbus_on_link
-# and compute_mbus_passengers_only, or count TransitDriverStarts events explicitly.
-DRIVER_INCLUDED_IN_PAX_COUNT = False    # FIXME flag — toggle to True after fix
+# RESOLVED 2026-07-30. The 2026-05-26 note claimed MATSim emits no
+# PersonEntersVehicle for the transit driver: that was wrong. It does — measured
+# 98 of them on the 98 line-44 H→B departures, exactly one per trip. What was
+# actually happening is the reverse: parse_events matched ONLY that event, so the
+# driver was the sole "passenger" ever counted while the real boardings
+# (PersonEntersPtVehicle, a separate xml type) were dropped.
+# Now: parse_events counts PT boardings only, and the driver is added back as the
+# +1 occupant in dynamic_mass.occupant_mass_kg — the same +1 that
+# feasibility.check_feasibility and feasibility.compute_alpha_max already used.
+DRIVER_INCLUDED_IN_PAX_COUNT = True     # driver added in dynamic_mass.occupant_mass_kg
 
 # ── Package weight regimes (Dutch urban parcel market) ────────────────────
 # Light:  3 kg — dominant e-commerce category (2.5–5 kg, MDPI 2022)

@@ -196,13 +196,7 @@ def compute_term_a(
         scenario_hbefa = parse_hbefa_events(scenario_events_path)
 
         if baseline_hbefa.empty or scenario_hbefa.empty:
-            return {
-                "term_a_kg": None,
-                "co2_background_baseline": None,
-                "co2_background_scenario": None,
-                "term_a_corridor_kg": None,
-                "hbefa_enabled": False,
-            }
+            return dict(TERM_A_STUB)
 
         bg_baseline = filter_background_vehicles(baseline_hbefa, transit_prefixes)["co2_kg"].sum()
         bg_scenario = filter_background_vehicles(scenario_hbefa, transit_prefixes)["co2_kg"].sum()
@@ -212,19 +206,36 @@ def compute_term_a(
     # Corridor-local Term A (only available from the Java CSV, and only when
     # corridor_links.txt was present at run time). Far better signal-to-noise
     # than the region-wide delta: the treatment lives on ~1,400 links.
-    corr_baseline = read_background_co2_from_totals(baseline_events_path,
-                                                    "background_corridor")
-    corr_scenario = read_background_co2_from_totals(scenario_events_path,
-                                                    "background_corridor")
-    term_a_corridor = (corr_baseline - corr_scenario
-                       if corr_baseline is not None and corr_scenario is not None
-                       else None)
+    def _bucket_delta(vehicle_class: str) -> float | None:
+        b = read_background_co2_from_totals(baseline_events_path, vehicle_class)
+        s = read_background_co2_from_totals(scenario_events_path, vehicle_class)
+        return (b - s) if b is not None and s is not None else None
+
+    term_a_corridor = _bucket_delta("background_corridor")
+
+    # Dwell-in-MATSim split (2026-07-30): the van relief and the bus-stop
+    # queueing live on two DISJOINT link sets and are REPORTED APART:
+    #   term_a_vans_kg    = corridor minus stop links  (row 1, expected +)
+    #   term_a_busstop_kg = stop links + 1-hop upstream (row 2, expected −)
+    # Both are baseline − scenario; the bus cost comes out negative on its
+    # own — do not flip signs by hand. Buckets exist only on runs whose
+    # co2_totals.csv was written with bus_stop_links.txt present (None before).
+    #
+    # NOT COMPARABLE TO term_a_corridor_kg: row 1 + row 2 spans corridor UNION
+    # bus-stop set (178 links), while term_a_corridor_kg is the corridor alone
+    # (163). The 15 extra links are the upstream ring where the queue behind a
+    # blocking bus forms — new road, deliberately added, not double counting.
+    # So Term A(split) − term_a_corridor_kg is NOT the bus cost.
+    term_a_vans = _bucket_delta("background_corridor_exstop")
+    term_a_busstop = _bucket_delta("background_busstop")
 
     return {
         "term_a_kg": term_a,
         "co2_background_baseline": bg_baseline,
         "co2_background_scenario": bg_scenario,
         "term_a_corridor_kg": term_a_corridor,
+        "term_a_vans_kg": term_a_vans,
+        "term_a_busstop_kg": term_a_busstop,
         "hbefa_enabled": True,
     }
 
@@ -236,6 +247,8 @@ TERM_A_STUB = {
     "co2_background_baseline": None,
     "co2_background_scenario": None,
     "term_a_corridor_kg": None,
+    "term_a_vans_kg": None,
+    "term_a_busstop_kg": None,
     "hbefa_enabled": False,
 }
 
