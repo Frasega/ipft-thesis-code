@@ -17,6 +17,18 @@ effect: heavier bus needs more engine power → more fuel → more CO2.
 The passenger dwell time (~3 min/stop, already in MATSim v_mean) cancels in the
 delta — only the EXTRA freight unloading dwell is added via CO2_idle_extra.
 
+CO2_idle_extra has two modes:
+  a-priori (default)  — the 10 s/stop + 5 s/parcel convention, charged in full.
+    Correct while the freight dwell is NOT simulated inside MATSim.
+  measured (use_measured_idle=True) — once the dwell IS in the schedule
+    (make_dwell_schedules.py), the extra standing is measured from the stop
+    events: mean over the H->B fleet of (standing_scenario − standing_baseline).
+    Where the timetable had slack, the parcels are unloaded while the bus was
+    going to stand anyway: no extra standing, no extra fuel. The a-priori
+    number is therefore an UPPER BOUND; the measured one replaces the estimate
+    with the simulation's answer. Never enable this on runs whose schedule has
+    no minimumStopDuration — the measured extra would be ~0 by construction.
+
 Dynamic mass: freight_remaining decreases at each pickup point as the bus
 delivers packages along the route. Using a constant mass would overestimate
 Term C on later route segments.
@@ -51,6 +63,35 @@ from parameters import (
 from sort_cycles import reconstruct_bus_profile
 
 
+# ── Measured extra standing (dwell simulated inside MATSim) ────────────────
+
+def measured_extra_standing_per_trip(
+    stop_standing_baseline: dict,
+    stop_standing_scenario: dict,
+    fleet_ids: frozenset[str] | set[str] | None = None,
+) -> tuple[float, int]:
+    """
+    Mean extra standing per H->B trip [s] = mean over the fleet of
+    (total standing in the scenario − total standing in the baseline).
+
+    Both dicts come from parse_events (vmean_df.attrs["stop_standing"]):
+    {vehicle_id: {link_id: standing_s}}. The same vehicle ids exist in both
+    runs (identical timetable), so the difference is per-vehicle and the
+    timetable holding — present on both sides — cancels. The mean is clamped
+    at 0: freight can only ADD standing; a negative mean would be seed noise.
+
+    Returns (mean_extra_s_per_trip, n_vehicles_matched).
+    """
+    ids = set(stop_standing_baseline) & set(stop_standing_scenario)
+    if fleet_ids is not None:
+        ids &= set(fleet_ids)
+    if not ids:
+        return 0.0, 0
+    diffs = [sum(stop_standing_scenario[v].values())
+             - sum(stop_standing_baseline[v].values()) for v in ids]
+    return max(0.0, sum(diffs) / len(diffs)), len(ids)
+
+
 # ── Per-link CO2 delta (with vs. without freight) ─────────────────────────
 
 def _delta_co2_on_link(
@@ -63,6 +104,7 @@ def _delta_co2_on_link(
     pax_timeline: dict,
     bus_tare_kg: float,
     rng_seed: int,
+    pax_sample_rate: float = 1.0,
 ) -> float:
     """
     CO2(bus with freight) − CO2(bus without freight) on one link [kg].
@@ -76,9 +118,12 @@ def _delta_co2_on_link(
 
     # Mass profiles
     m_with = compute_mbus_on_link(
-        link_id, freight_remaining, pax_timeline, bus_id, t_enter, t_leave, bus_tare_kg
+        link_id, freight_remaining, pax_timeline, bus_id, t_enter, t_leave, bus_tare_kg,
+        pax_sample_rate,
     )
-    m_without = compute_mbus_passengers_only(bus_id, t_enter, t_leave, pax_timeline, bus_tare_kg)
+    m_without = compute_mbus_passengers_only(
+        bus_id, t_enter, t_leave, pax_timeline, bus_tare_kg, pax_sample_rate
+    )
 
     freight_on_link = m_with - m_without
     if freight_on_link <= 0:
@@ -112,6 +157,12 @@ def compute_term_c_for_bus(
     bus_trips_per_day: int = BUS_TRIPS_PER_DAY,
     rng_seed: int = 42,
     extra_dwell_per_unit_s: float = EXTRA_DWELL_PER_UNIT_S,
+    pax_sample_rate: float = 1.0,
+    use_measured_idle: bool = False,
+    stop_standing_baseline: dict | None = None,
+    stop_standing_scenario: dict | None = None,
+    idle_fleet_ids: frozenset[str] | set[str] | None = None,
+    min_measured_dwell_fraction: float = 0.10,
 ) -> dict:
     """
     Compute Term C [kg CO2 per day] using ONE representative bus trip × F.
@@ -195,13 +246,56 @@ def compute_term_c_for_bus(
             pax_timeline=pax_timeline,
             bus_tare_kg=bus_tare_kg,
             rng_seed=rng_seed,
+            pax_sample_rate=pax_sample_rate,
         )
         running_delta += delta
 
-    # Extra idle CO2 from freight unloading dwell — per trip
+    # Extra idle CO2 from freight unloading dwell — per trip.
+    # a-priori: the full 10 s/stop + 5 s/parcel convention (upper bound).
+    # measured: fleet-mean extra standing, scenario − baseline, from the stop
+    # events — only valid when the dwell is actually in the MATSim schedule.
     units_per_stop = units_per_trip / max(1, n_pickup_stops)
     extra_dwell_per_stop = compute_extra_dwell_time(units_per_stop, extra_dwell_per_unit_s)
-    total_extra_dwell_per_trip = extra_dwell_per_stop * n_pickup_stops
+    apriori_dwell_per_trip = extra_dwell_per_stop * n_pickup_stops
+
+    idle_mode = "a-priori"
+    measured_dwell_per_trip = None
+    n_idle_fleet = 0
+    total_extra_dwell_per_trip = apriori_dwell_per_trip
+    if use_measured_idle:
+        if not stop_standing_baseline or not stop_standing_scenario:
+            raise ValueError(
+                "use_measured_idle=True but stop standing data is missing — "
+                "these runs have no facility events (or parse_events was not "
+                "updated). Refusing to silently fall back to the a-priori dwell.")
+        measured_dwell_per_trip, n_idle_fleet = measured_extra_standing_per_trip(
+            stop_standing_baseline, stop_standing_scenario, idle_fleet_ids)
+        if n_idle_fleet == 0:
+            raise ValueError(
+                "use_measured_idle=True but no vehicle appears in BOTH runs' "
+                "stop standing data — check the bus id allowlist.")
+        # Guard against the silent-wrong-number case: pointing --dwell-in-matsim
+        # at runs whose schedule has NO minimumStopDuration. There the scenario
+        # and the baseline stand for the same passenger dwell, so the measured
+        # extra collapses to ~0 and Term C would lose its whole idle component
+        # without any error. Timetable slack can legitimately swallow part of
+        # the dwell, but not essentially all of it (most line-44 stops have zero
+        # slack), so a near-zero measurement means the wrong runs.
+        if (apriori_dwell_per_trip > 0
+                and measured_dwell_per_trip < min_measured_dwell_fraction
+                * apriori_dwell_per_trip):
+            raise ValueError(
+                f"use_measured_idle=True but the measured extra standing is only "
+                f"{measured_dwell_per_trip:.1f} s/trip against {apriori_dwell_per_trip:.1f} s "
+                f"expected a priori ({measured_dwell_per_trip / apriori_dwell_per_trip:.1%}). "
+                f"That almost certainly means these runs use a schedule WITHOUT "
+                f"minimumStopDuration (i.e. pre-dwell runs) — rerun them with a "
+                f"schedule from make_dwell_schedules.py, or drop --dwell-in-matsim "
+                f"to charge the a-priori dwell. Lower min_measured_dwell_fraction "
+                f"only if the timetable really does absorb this much.")
+        total_extra_dwell_per_trip = measured_dwell_per_trip
+        idle_mode = "measured"
+
     co2_idle_extra = compute_co2_idle(total_extra_dwell_per_trip, BUS_IDLE_FUEL_RATE_L_PER_S)
 
     co2_per_trip = running_delta + co2_idle_extra
@@ -211,6 +305,11 @@ def compute_term_c_for_bus(
         "term_c_kg_per_day": term_c_per_day,
         "co2_running_delta_kg_per_trip": running_delta,
         "co2_idle_extra_kg_per_trip": co2_idle_extra,
+        "idle_mode": idle_mode,
+        "extra_dwell_s_per_trip": total_extra_dwell_per_trip,
+        "extra_dwell_s_per_trip_apriori": apriori_dwell_per_trip,
+        "extra_dwell_s_per_trip_measured": measured_dwell_per_trip,
+        "n_idle_fleet_vehicles": n_idle_fleet,
         "freight_per_trip_kg": freight_per_trip_kg,
         "units_per_trip": units_per_trip,
         "n_links_processed": len(bus_links),
@@ -235,6 +334,11 @@ def compute_term_c(
     hb_route_prefixes: tuple[str, ...] = ("EW_",),
     bus_id_allowlist: frozenset[str] | set[str] | None = None,
     extra_dwell_per_unit_s: float = EXTRA_DWELL_PER_UNIT_S,
+    pax_sample_rate: float = 1.0,
+    use_measured_idle: bool = False,
+    stop_standing_baseline: dict | None = None,
+    stop_standing_scenario: dict | None = None,
+    min_measured_dwell_fraction: float = 0.10,
 ) -> dict:
     """
     Compute Term C [kg CO2 per day] across the H→B route for one scenario.
@@ -342,6 +446,12 @@ def compute_term_c(
         bus_trips_per_day=bus_trips_per_day,
         rng_seed=rng_seed,
         extra_dwell_per_unit_s=extra_dwell_per_unit_s,
+        pax_sample_rate=pax_sample_rate,
+        use_measured_idle=use_measured_idle,
+        stop_standing_baseline=stop_standing_baseline,
+        stop_standing_scenario=stop_standing_scenario,
+        idle_fleet_ids=bus_id_allowlist,
+        min_measured_dwell_fraction=min_measured_dwell_fraction,
     )
 
     return {
@@ -351,6 +461,9 @@ def compute_term_c(
         "weight_per_unit_kg": weight_per_unit_kg,
         "total_freight_kg_per_day": total_freight_kg_per_day,
         "representative_bus_id": representative_bus,
+        "idle_mode": result.get("idle_mode", "a-priori"),
+        "extra_dwell_s_per_trip": result.get("extra_dwell_s_per_trip"),
+        "extra_dwell_s_per_trip_measured": result.get("extra_dwell_s_per_trip_measured"),
     }
 
 

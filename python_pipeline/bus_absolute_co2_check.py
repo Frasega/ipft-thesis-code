@@ -85,7 +85,8 @@ def unladen_co2_per_trip(run_dir: Path, preset) -> dict:
         tt = float(row.travel_time_s)
         t_leave = row.time_entered_s + tt
         m_pax = compute_mbus_passengers_only(
-            rep, row.time_entered_s, t_leave, pax_timeline, BUS_TARE_KG
+            rep, row.time_entered_s, t_leave, pax_timeline, BUS_TARE_KG,
+            preset.sample_rate,
         )
         co2 = compute_co2_running(
             v_t, a_t, m_pax, BUS_CD, BUS_FRONTAL_AREA_M2,
@@ -96,6 +97,7 @@ def unladen_co2_per_trip(run_dir: Path, preset) -> dict:
         co2_trip += co2 * scale
         dist_m += link_lengths.get(row.link_id, 0.0)
         time_s += tt
+        # occupants, not passengers: real-scale riders plus the driver
         pax_weighted += ((m_pax - BUS_TARE_KG) / 75.0) * tt
 
     return {

@@ -34,6 +34,19 @@ from pathlib import Path
 # Add parent dir to path so imports work when run from project root
 sys.path.insert(0, str(Path(__file__).parent))
 
+# Windows: a REDIRECTED stdout defaults to cp1252, which cannot encode the
+# arrows and ± used in the progress lines -> UnicodeEncodeError and the whole
+# scenario dies after Term C is already computed. A terminal never shows this
+# because it is UTF-8, but rotterdam_surface_robust runs every cell with
+# subprocess capture_output=True, i.e. redirected. errors="replace" keeps the
+# text readable and can never raise. Done at import so it also covers
+# sensitivity_surface, which imports run_scenario and prints through it.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(errors="replace")
+    except (AttributeError, ValueError):  # not a TextIOWrapper (e.g. captured)
+        pass
+
 from feasibility import check_feasibility, run_feasibility_matrix, feasibility_summary
 from parse_events import parse_events
 from term_a import compute_term_a, TERM_A_STUB
@@ -68,12 +81,14 @@ def run_scenario(
     bus_id_allowlist: frozenset[str] | set[str] | None = None,
     hb_route_prefixes: tuple[str, ...] = ("EW_",),
     corridor_links_file: str | None = None,
+    bus_stop_links_file: str | None = None,
     van_payload_capacity_kg: float | None = None,
     van_parcels_per_tour_max: int | None = None,
     van_stop_idle_s: float = VAN_STOP_IDLE_S,
     van_load_factor: float | None = None,
     recon_seed: int = 42,
     extra_dwell_per_unit_s: float | None = None,
+    dwell_in_matsim: bool = False,
 ) -> dict:
     """
     Run the full pipeline for one (alpha, weight_regime) scenario.
@@ -112,10 +127,20 @@ def run_scenario(
     # ONLY the records the terms need (vans + freight buses + corridor background),
     # which cuts the per-parse memory from ~6-8 GB to well under 1 GB. None on the
     # toy, where the parse keeps everything (region-wide Term A).
+    # With the dwell-in-MATSim split the bus-stop set is kept as well, so the
+    # bus-stop congestion row can be measured from the same parse.
     corr_links = None
+    busstop_links = None
     if corridor_links_file is not None:
         from corridor_metrics import load_corridor_links
         corr_links = load_corridor_links(corridor_links_file)
+    if bus_stop_links_file is not None and Path(bus_stop_links_file).exists():
+        from corridor_metrics import load_corridor_links
+        busstop_links = load_corridor_links(bus_stop_links_file)
+    keep_links = None
+    if corr_links is not None or busstop_links is not None:
+        keep_links = frozenset((corr_links or frozenset())
+                               | (busstop_links or frozenset()))
 
     # ── Parse baseline events ──────────────────────────────────────────────
     if verbose:
@@ -123,7 +148,7 @@ def run_scenario(
     baseline_vmean, baseline_pax = parse_events(
         baseline_events_path, network_path, verbose=verbose,
         bus_prefixes=transit_prefixes, pax_bus_ids=bus_id_allowlist,
-        keep_link_ids=corr_links,
+        keep_link_ids=keep_links,
     )
 
     # ── Parse scenario events (or reuse baseline as proxy) ────────────────
@@ -133,7 +158,7 @@ def run_scenario(
         scenario_vmean, scenario_pax = parse_events(
             scenario_events_path, network_path, verbose=verbose,
             bus_prefixes=transit_prefixes, pax_bus_ids=bus_id_allowlist,
-            keep_link_ids=corr_links,
+            keep_link_ids=keep_links,
         )
     else:
         if verbose:
@@ -185,6 +210,14 @@ def run_scenario(
     term_c_kwargs = {}
     if extra_dwell_per_unit_s is not None:
         term_c_kwargs["extra_dwell_per_unit_s"] = extra_dwell_per_unit_s
+    if dwell_in_matsim:
+        # Freight dwell is simulated in the schedule: replace the a-priori
+        # idle with the MEASURED extra standing (scenario − baseline, fleet
+        # mean). term_c raises if the standing data is missing rather than
+        # silently falling back.
+        term_c_kwargs["use_measured_idle"] = True
+        term_c_kwargs["stop_standing_baseline"] = baseline_vmean.attrs.get("stop_standing")
+        term_c_kwargs["stop_standing_scenario"] = scenario_vmean.attrs.get("stop_standing")
     term_c_result = compute_term_c(
         vmean_df=scenario_vmean,
         pax_timeline=scenario_pax,
@@ -197,6 +230,7 @@ def run_scenario(
         bus_id_allowlist=bus_id_allowlist,
         hb_route_prefixes=hb_route_prefixes,
         rng_seed=recon_seed,
+        pax_sample_rate=sample_rate,
         **term_c_kwargs,
     )
     if term_c_result["representative_bus_id"] is None and alpha > 0:
@@ -234,22 +268,41 @@ def run_scenario(
                   f"cell infeasible in practice")
 
     # ── Corridor-local congestion metrics (speed-based, HBEFA-independent) ─
+    # Three link sets, measured from the same parse:
+    #   corridor  full 163-link van corridor (historical, kept for comparability)
+    #   vanrow    corridor MINUS the bus-stop set (row 1: van relief, expected +)
+    #   busrow    bus_stop_links.txt (row 2: bus-stop queueing, expected −)
+    # vanrow/busrow are DISJOINT by construction (make_bus_stop_links.py) and
+    # both use the same baseline − scenario convention: the bus cost comes out
+    # negative on its own, no sign is flipped by hand.
     corridor = None
-    if corridor_links_file is not None:
-        from corridor_metrics import (corridor_background_stats, corridor_delta,
-                                      load_corridor_links)
+    vanrow = None
+    busrow = None
+    if corridor_links_file is not None or busstop_links is not None:
+        from corridor_metrics import corridor_background_stats, corridor_delta
         from parse_events import load_link_attributes
-        corr_links = load_corridor_links(corridor_links_file)
         link_lengths, _ = load_link_attributes(network_path)
-        base_stats = corridor_background_stats(baseline_vmean, corr_links, link_lengths)
-        scen_stats = corridor_background_stats(scenario_vmean, corr_links, link_lengths)
-        corridor = {**corridor_delta(base_stats, scen_stats),
+
+        def _delta_on(links: frozenset[str]) -> dict:
+            base_stats = corridor_background_stats(baseline_vmean, links, link_lengths)
+            scen_stats = corridor_background_stats(scenario_vmean, links, link_lengths)
+            return {**corridor_delta(base_stats, scen_stats),
                     "baseline": base_stats, "scenario": scen_stats}
-        if verbose and base_stats["mean_speed_ms"]:
-            print(f"[Step 2b] Corridor: background speed "
-                  f"{base_stats['mean_speed_ms']:.2f} → "
-                  f"{scen_stats['mean_speed_ms']:.2f} m/s, "
-                  f"vehicle-hours delta {corridor['delta_vehicle_hours']:+.1f} h (sim scale)")
+
+        if corr_links is not None:
+            corridor = _delta_on(corr_links)
+            if verbose and corridor["baseline"]["mean_speed_ms"]:
+                print(f"[Step 2b] Corridor: background speed "
+                      f"{corridor['baseline']['mean_speed_ms']:.2f} → "
+                      f"{corridor['scenario']['mean_speed_ms']:.2f} m/s, "
+                      f"vehicle-hours delta {corridor['delta_vehicle_hours']:+.1f} h (sim scale)")
+        if busstop_links is not None:
+            busrow = _delta_on(busstop_links)
+            if corr_links is not None:
+                vanrow = _delta_on(frozenset(corr_links - busstop_links))
+            if verbose:
+                print(f"[Step 2b] Bus-stop row ({len(busstop_links)} links): "
+                      f"vehicle-hours delta {busrow['delta_vehicle_hours']:+.2f} h (sim scale)")
 
     # ── Step 6: Net CO2 saving (all terms at real-world scale) ────────────
     term_a_kg = (term_a_result["term_a_kg"] or 0.0) * scale
@@ -310,6 +363,22 @@ def run_scenario(
                                          if corridor else None),
         "corridor_speed_change_ms": (corridor["speed_change_ms"]
                                      if corridor else None),
+        # ── Dwell-in-MATSim split: the two Term-A rows, reported apart ────
+        "term_a_vans_kg": ((term_a_result.get("term_a_vans_kg") or 0.0) * scale
+                           if term_a_result.get("term_a_vans_kg") is not None
+                           else None),
+        "term_a_busstop_kg": ((term_a_result.get("term_a_busstop_kg") or 0.0) * scale
+                              if term_a_result.get("term_a_busstop_kg") is not None
+                              else None),
+        "vanrow_delta_vehicle_hours": (vanrow["delta_vehicle_hours"]
+                                       if vanrow else None),
+        "vanrow_speed_change_ms": (vanrow["speed_change_ms"] if vanrow else None),
+        "busstop_delta_vehicle_hours": (busrow["delta_vehicle_hours"]
+                                        if busrow else None),
+        "busstop_speed_change_ms": (busrow["speed_change_ms"] if busrow else None),
+        "dwell_in_matsim": dwell_in_matsim,
+        "idle_mode": term_c_result.get("idle_mode", "a-priori"),
+        "extra_dwell_s_per_trip": term_c_result.get("extra_dwell_s_per_trip"),
     }
 
 
@@ -339,6 +408,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--bus-id", default=None,
                    help="Bus vehicle ID to use for Term C (default: median-link-count "
                         "bus among the H→B candidates)")
+    p.add_argument("--dwell-in-matsim", action="store_true",
+                   help="The runs simulate the freight dwell in the schedule "
+                        "(make_dwell_schedules.py): Term C idle uses the MEASURED "
+                        "extra standing (scenario − baseline) instead of the "
+                        "a-priori 10 s + 5 s/parcel convention.")
     p.add_argument("--feasibility-only", action="store_true",
                    help="Only run the feasibility matrix and exit")
     p.add_argument("--output", default=None,
@@ -377,6 +451,8 @@ def main() -> None:
         bus_id_allowlist=preset.term_c_bus_ids,
         hb_route_prefixes=preset.hb_route_prefixes,
         corridor_links_file=preset.corridor_links_file,
+        bus_stop_links_file=preset.bus_stop_links_file,
+        dwell_in_matsim=args.dwell_in_matsim,
     )
 
     if args.output:

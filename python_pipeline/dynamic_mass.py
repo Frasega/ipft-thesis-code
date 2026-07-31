@@ -90,6 +90,31 @@ def build_freight_remaining_uniform(
 
 # ── Per-link bus mass ──────────────────────────────────────────────────────
 
+def occupant_mass_kg(avg_pax_sim: float, pax_sample_rate: float = 1.0) -> float:
+    """
+    Mass of the people on board [kg] = (real passengers + driver) × 75.
+
+    Two corrections live here, and they live in ONE place on purpose, because
+    keeping them in step across the mass functions is what previously failed:
+
+    1. `pax_sample_rate` — pax_timeline counts SIMULATED passengers. On a 10%
+       population sample each of them stands for ten real ones, while the freight
+       added alongside is already at real scale. Dividing puts both on the same
+       scale. The toy runs a full population (rate 1.0) and is unaffected.
+    2. `+1` driver — parse_events counts PersonEntersPtVehicle only, so the
+       driver (a plain PersonEntersVehicle on the bus) is deliberately not in
+       pax_timeline. He is real mass on the axles, so he is added back here.
+       This matches the explicit +1 in feasibility.check_feasibility and
+       feasibility.compute_alpha_max.
+
+    Both corrections cancel exactly in the Term C delta (the formula is linear
+    in mass and both branches share this term). They matter for any ABSOLUTE
+    bus mass, such as bus_absolute_co2_check.
+    """
+    rate = pax_sample_rate if pax_sample_rate > 0 else 1.0
+    return (avg_pax_sim / rate + 1.0) * AVG_PERSON_WEIGHT_KG
+
+
 def compute_mbus_on_link(
     link_id: str,
     freight_remaining: dict[str, float],
@@ -98,11 +123,13 @@ def compute_mbus_on_link(
     t_enter: float,
     t_leave: float,
     bus_tare_kg: float = BUS_TARE_KG,
+    pax_sample_rate: float = 1.0,
 ) -> float:
     """
     Total bus mass on a specific link during [t_enter, t_leave].
 
-    M_bus = tare + avg_passengers × 75 kg + freight_remaining_on_link
+    M_bus = tare + (avg_passengers/sample_rate + driver) × 75 kg
+            + freight_remaining_on_link
 
     Parameters
     ----------
@@ -112,12 +139,14 @@ def compute_mbus_on_link(
     bus_id           : bus vehicle ID (for pax_timeline lookup)
     t_enter, t_leave : entry/exit time on this link [s since midnight]
     bus_tare_kg      : bus empty mass [kg]
+    pax_sample_rate  : population sampling rate of the run (0.10 on Rotterdam,
+                       1.0 on the toy) — see occupant_mass_kg()
     """
     from parse_events import get_avg_passengers_on_link
 
     avg_pax = get_avg_passengers_on_link(pax_timeline, bus_id, t_enter, t_leave)
     freight = freight_remaining.get(link_id, 0.0)
-    return bus_tare_kg + avg_pax * AVG_PERSON_WEIGHT_KG + freight
+    return bus_tare_kg + occupant_mass_kg(avg_pax, pax_sample_rate) + freight
 
 
 def compute_mbus_passengers_only(
@@ -126,15 +155,19 @@ def compute_mbus_passengers_only(
     t_leave: float,
     pax_timeline: dict,
     bus_tare_kg: float = BUS_TARE_KG,
+    pax_sample_rate: float = 1.0,
 ) -> float:
     """
     Bus mass without freight — used to compute Term C delta
     (CO2_with_freight − CO2_without_freight).
+
+    Shares occupant_mass_kg() with compute_mbus_on_link so the two can never
+    drift apart: the delta between them must be the freight and nothing else.
     """
     from parse_events import get_avg_passengers_on_link
 
     avg_pax = get_avg_passengers_on_link(pax_timeline, bus_id, t_enter, t_leave)
-    return bus_tare_kg + avg_pax * AVG_PERSON_WEIGHT_KG
+    return bus_tare_kg + occupant_mass_kg(avg_pax, pax_sample_rate)
 
 
 # ── Extra dwell time from freight unloading ────────────────────────────────

@@ -48,12 +48,16 @@ python_pipeline/                     the emission + analysis pipeline (Python)
   make_toy_warm_scenarios.py         warm scenario generation (toy)
   make_toy_screening_scenarios.py    fixed-variable screening (toy)
   make_rotterdam_warm_scenarios.py   warm scenario generation (Rotterdam)
+  make_dwell_schedules.py            per-alpha transit schedules: freight dwell
+                                     (minimumStopDuration) + isBlocking
+  make_bus_stop_links.py             the bus-stop link set for the Term A split
   scenario_presets.py                toy vs Rotterdam configuration
   scenario_runner.py                 batch MATSim runner
   rotterdam_surface_robust.py        robust (paired-seed) surface post-processing
   screening_analysis.py / screening_bus_capacity.py
   validate_van_consumption.py        van fuel validation vs official WLTP
   scong_toy_corridor_decomp.py       S_cong decomposition (volume vs speed)
+  test_dwell_idle_guard.py           guards on the measured-idle path
   *_check.py / *_diag.py             validation and diagnostic scripts
 
 scenarios/ipft_rotterdam/            Rotterdam-specific setup and analysis (Python)
@@ -67,6 +71,30 @@ src/main/java/org/matsim/project/    MATSim model classes (Java)
   Co2TotalsHandler.java              per-run CO2 aggregation event handler
   RunMatsimModelImplementation.java  entry point
 ```
+
+## Freight dwell inside MATSim
+
+The parcel handover at each stop is simulated rather than only accounted for afterwards.
+`make_dwell_schedules.py` writes, per load rate, a transit schedule in which the delivery
+stops of the freight route carry a `minimumStopDuration` (10 s per stop + 5 s per parcel)
+and the stop facilities are marked `isBlocking`, so a stopped bus holds the traffic lane.
+The baseline uses the same schedule with zero freight dwell, so the passenger stop — which
+happens in both worlds — cancels in the difference and only the extra freight seconds are
+measured.
+
+Two consequences for the accounting:
+
+- `parse_events.py` subtracts the standing time from the stop link's travel time, so the
+  per-link mean speed describes the driving part only. Left in, the kinematic
+  reconstruction would charge traction fuel for accelerations that never happened, while
+  the same seconds are already charged as idle in `E_PT`.
+- `term_c.py` can take the extra idle from the simulation (`use_measured_idle`) instead of
+  the a-priori convention. Where the timetable had slack the bus was standing anyway, so
+  the parcels add no standing time and no extra fuel; the a-priori figure is an upper bound.
+
+The congestion effect is reported on two disjoint link sets, never merged into one number:
+the van relief on the corridor minus the stop links, and the cost of buses held at stops on
+those stop links plus their upstream links (`make_bus_stop_links.py`).
 
 ## Java
 

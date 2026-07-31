@@ -60,6 +60,17 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 	private java.util.Set<String> corridorLinks = java.util.Set.of();
 	private double warmBackgroundCorridor, coldBackgroundCorridor;
 
+	// Dwell-in-MATSim split (2026-07-30): the van relief and the bus-stop
+	// queueing are measured on two DISJOINT link sets and reported apart.
+	//   background_corridor_exstop = corridor MINUS the bus-stop set (row 1, + saving)
+	//   background_busstop         = bus_stop_links.txt (row 2, − cost: the 7
+	//                                car-mode line-44 stop links + 1-hop upstream)
+	// bus_stop_links.txt is produced by python_pipeline/make_bus_stop_links.py;
+	// absent file = feature off, only the historical rows are written.
+	private java.util.Set<String> busStopLinks = java.util.Set.of();
+	private double warmBackgroundBusstop, coldBackgroundBusstop;
+	private double warmBackgroundCorridorExstop, coldBackgroundCorridorExstop;
+
 	@Inject
 	public Co2TotalsHandler(EmissionModule emissionModule, OutputDirectoryHierarchy controlerIO,
 							org.matsim.core.api.experimental.events.EventsManager globalEvents,
@@ -70,30 +81,33 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 		this.config = config;
 	}
 
-	private void loadCorridorLinks() {
-		for (String candidate : new String[]{"corridor_links.txt", "../corridor_links.txt"}) {
+	private java.util.Set<String> loadLinkSet(String filename) {
+		for (String candidate : new String[]{filename, "../" + filename}) {
 			try {
 				java.net.URL url = org.matsim.core.config.ConfigGroup
 						.getInputFileURL(this.config.getContext(), candidate);
+				java.util.Set<String> links;
 				try (java.util.stream.Stream<String> lines =
 							 Files.lines(Paths.get(url.toURI()), StandardCharsets.UTF_8)) {
-					this.corridorLinks = lines.map(String::trim)
+					links = lines.map(String::trim)
 							.filter(s -> !s.isEmpty())
 							.collect(java.util.stream.Collectors.toUnmodifiableSet());
 				}
 				org.apache.logging.log4j.LogManager.getLogger(Co2TotalsHandler.class)
-						.info("Co2TotalsHandler: corridor set loaded from {} ({} links)",
-								candidate, this.corridorLinks.size());
-				return;
+						.info("Co2TotalsHandler: link set loaded from {} ({} links)",
+								candidate, links.size());
+				return links;
 			} catch (Exception ignored) {
 				// try next candidate; absent file = feature off
 			}
 		}
+		return java.util.Set.of();
 	}
 
 	@Override
 	public void notifyStartup(StartupEvent event) {
-		loadCorridorLinks();
+		this.corridorLinks = loadLinkSet("corridor_links.txt");
+		this.busStopLinks = loadLinkSet("bus_stop_links.txt");
 		// The emission events manager differs from the global one when
 		// isWritingEmissionsEvents=false — register on the right channel.
 		this.emissionModule.getEmissionEventsManager().addHandler(this);
@@ -128,6 +142,8 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 		warmBackground = warmVan = warmTransit = 0.0;
 		coldBackground = coldVan = coldTransit = 0.0;
 		warmBackgroundCorridor = coldBackgroundCorridor = 0.0;
+		warmBackgroundBusstop = coldBackgroundBusstop = 0.0;
+		warmBackgroundCorridorExstop = coldBackgroundCorridorExstop = 0.0;
 	}
 
 	private static int classify(String vehicleId) {
@@ -147,10 +163,12 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 			case 2 -> warmTransit += g;
 			default -> {
 				warmBackground += g;
-				if (!corridorLinks.isEmpty()
-						&& corridorLinks.contains(event.getLinkId().toString())) {
-					warmBackgroundCorridor += g;
-				}
+				String link = event.getLinkId().toString();
+				boolean inCorridor = corridorLinks.contains(link);
+				boolean inBusstop = busStopLinks.contains(link);
+				if (inCorridor) warmBackgroundCorridor += g;
+				if (inBusstop) warmBackgroundBusstop += g;
+				if (inCorridor && !inBusstop) warmBackgroundCorridorExstop += g;
 			}
 		}
 	}
@@ -164,10 +182,12 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 			case 2 -> coldTransit += g;
 			default -> {
 				coldBackground += g;
-				if (!corridorLinks.isEmpty()
-						&& corridorLinks.contains(event.getLinkId().toString())) {
-					coldBackgroundCorridor += g;
-				}
+				String link = event.getLinkId().toString();
+				boolean inCorridor = corridorLinks.contains(link);
+				boolean inBusstop = busStopLinks.contains(link);
+				if (inCorridor) coldBackgroundCorridor += g;
+				if (inBusstop) coldBackgroundBusstop += g;
+				if (inCorridor && !inBusstop) coldBackgroundCorridorExstop += g;
 			}
 		}
 	}
@@ -185,6 +205,14 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 			if (!corridorLinks.isEmpty()) {
 				writeRow(w, event.getIteration(), "background_corridor",
 						warmBackgroundCorridor, coldBackgroundCorridor);
+			}
+			if (!busStopLinks.isEmpty()) {
+				writeRow(w, event.getIteration(), "background_busstop",
+						warmBackgroundBusstop, coldBackgroundBusstop);
+				if (!corridorLinks.isEmpty()) {
+					writeRow(w, event.getIteration(), "background_corridor_exstop",
+							warmBackgroundCorridorExstop, coldBackgroundCorridorExstop);
+				}
 			}
 		} catch (IOException e) {
 			throw new RuntimeException("Could not write " + path, e);

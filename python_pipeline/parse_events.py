@@ -3,7 +3,26 @@ Streaming parser for MATSim events.xml.zst files.
 
 Extracts from the compressed event stream:
   - v_mean per (vehicle, link): from entered-link / left-link event pairs
-  - passenger counts per bus: from PersonEntersVehicle / PersonLeavesVehicle events
+  - passenger counts per bus: from PersonEntersPtVehicle / PersonLeavesPtVehicle
+    events (the transit-specific types; the plain PersonEntersVehicle on a bus is
+    the driver and is counted separately, not as a passenger)
+  - per-stop standing time per bus: from VehicleArrivesAtFacility /
+    VehicleDepartsAtFacility (tracked buses only)
+
+Bus V_mean excludes standing time. For tracked buses, the standing time at a
+stop facility (departure − arrival) is subtracted from the link travel time and
+V_mean is computed over the DRIVING part only. Left inside, the reconstruction
+would read the stop as very slow driving and charge fuel for stop-and-go
+accelerations that never happened — while the dwell fuel is already charged
+separately as idle (v = 0, engine on) in Term C. Same seconds, two charges.
+The facility→link mapping comes from the facility id itself (the Rotterdam ids
+embed "…link:<id>"); ids without that pattern (toy) are skipped, which keeps
+the historical toy behaviour byte-identical.
+
+The per-(vehicle, link) standing totals are exposed on the returned DataFrame as
+    vmean_df.attrs["stop_standing"] = {vehicle_id: {link_id: standing_s}}
+(attrs, not a third return value, so every existing caller keeps working).
+Term C uses scenario−baseline standing as the MEASURED extra freight idle.
 
 Never loads the full XML into memory. Uses zstandard streaming + iterparse + elem.clear().
 
@@ -14,7 +33,7 @@ Usage:
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 
 import pandas as pd
 import zstandard as zstd
@@ -22,8 +41,22 @@ import zstandard as zstd
 from parameters import BUS_ID_PREFIXES, VAN_ID_PREFIX
 
 # Module-level parse cache: (events_path, network_path) -> (df, pax_timeline)
-# Avoids re-parsing the same large .zst file multiple times in sensitivity_surface.py
-_PARSE_CACHE: dict = {}
+# Avoids re-parsing the same large .zst file multiple times in sensitivity_surface.py,
+# which walks (baseline, alpha_1..alpha_4) per group: the baseline is parsed once
+# and hit four times, cutting a 30-cell Rotterdam sweep from 96 parses to 60.
+#
+# BOUNDED (LRU, 2 entries). The access pattern is baseline, scenario, baseline,
+# scenario', ... so a capacity of 2 keeps the baseline resident while the
+# scenarios rotate — full benefit, no unbounded growth over 60 parses.
+_PARSE_CACHE: "OrderedDict" = OrderedDict()
+_PARSE_CACHE_MAX = 2
+
+
+def _cache_put(key, value) -> None:
+    _PARSE_CACHE[key] = value
+    _PARSE_CACHE.move_to_end(key)
+    while len(_PARSE_CACHE) > _PARSE_CACHE_MAX:
+        _PARSE_CACHE.popitem(last=False)
 
 
 def open_events_stream(events_path: str):
@@ -163,11 +196,14 @@ def parse_events(
     cache_key = (str(events_zst_path), str(network_xml_path),
                  tuple(bus_prefixes), pax_ids, keep_ids)
     if cache_key in _PARSE_CACHE:
+        _PARSE_CACHE.move_to_end(cache_key)          # LRU touch
         cached_df, cached_pax = _PARSE_CACHE[cache_key]
         # Deep copy of pax_timeline: each value is a list of (time, count) tuples
         # that callers may not modify, but the defensive copy prevents cache
         # corruption if a future caller does (e.g. sorting/filtering in place).
-        return cached_df.copy(), {k: list(v) for k, v in cached_pax.items()}
+        out_df = cached_df.copy()
+        out_df.attrs["stop_standing"] = cached_df.attrs.get("stop_standing", {})
+        return out_df, {k: list(v) for k, v in cached_pax.items()}
 
     link_lengths, link_freespeeds = load_link_attributes(network_xml_path)
 
@@ -176,12 +212,27 @@ def parse_events(
     pax_counts: dict = defaultdict(int)    # {bus_vehicle_id: current count}
     pax_timeline: dict = defaultdict(list) # {bus_vehicle_id: [(time, count), ...]}
 
+    # Stop-facility standing (tracked buses): the facility id embeds the link
+    # ("2685255.link:448306"); ids without "link:" are skipped (toy).
+    open_stop: dict = {}                       # {vehicle_id: (link_id, t_arrival)}
+    stop_intervals: dict = defaultdict(list)   # {(veh, link): [(t_arr, t_dep), ...]}
+    stop_standing: dict = defaultdict(lambda: defaultdict(float))  # veh -> link -> s
+
+    def _facility_link(fac_id: str | None) -> str | None:
+        if fac_id and "link:" in fac_id:
+            return fac_id.split("link:", 1)[1]
+        return None
+
     # Counters for diagnostics
     n_entered = 0
     n_left = 0
     n_stuck = 0
     n_zero_dt = 0
     n_overspeed = 0
+    n_pax_board = 0      # PersonEntersPtVehicle on tracked buses (real passengers)
+    n_driver_board = 0   # PersonEntersVehicle on tracked buses (drivers, not counted)
+    n_stops_matched = 0  # facility stops whose standing was subtracted from a link
+    total_standing_s = 0.0
 
     with open_events_stream(events_zst_path) as reader:
             for _, elem in ET.iterparse(reader, events=["end"]):
@@ -212,6 +263,28 @@ def parse_events(
                             if dt <= 0:
                                 n_zero_dt += 1
                             elif lid in link_lengths:
+                                # Subtract the standing time of any stop served
+                                # during THIS traversal: V_mean must describe the
+                                # driving part only (the stop is charged as idle
+                                # in Term C, never as slow driving).
+                                standing = 0.0
+                                pending = stop_intervals.get(key)
+                                if pending:
+                                    remaining = []
+                                    for t_arr, t_dep in pending:
+                                        if t_arr >= t_enter - 0.5 and t_dep <= t + 0.5:
+                                            standing += t_dep - t_arr
+                                        elif t_dep > t + 0.5:
+                                            remaining.append((t_arr, t_dep))
+                                        # intervals before t_enter: stale, drop
+                                    if remaining:
+                                        stop_intervals[key] = remaining
+                                    else:
+                                        del stop_intervals[key]
+                                if standing > 0:
+                                    n_stops_matched += 1
+                                    total_standing_s += standing
+                                    dt = max(1.0, dt - standing)
                                 v = link_lengths[lid] / dt
                                 # Sanity: clamp to 1.5× freespeed (MATSim can briefly exceed)
                                 fs = link_freespeeds.get(lid)
@@ -232,17 +305,45 @@ def parse_events(
                         n_stuck += 1
 
                 # ── Passenger boarding / alighting ─────────────────────
-                elif etype == "PersonEntersVehicle":
+                # MATSim 2026 writes transit boardings as PersonEntersPtVehicle,
+                # a SEPARATE xml type (the Java class extends PersonEntersVehicleEvent,
+                # so Java handlers see both, but a string match on the xml does not).
+                # The plain PersonEntersVehicle on a transit vehicle is the DRIVER:
+                # it is deliberately NOT counted here, because the driver mass is
+                # added explicitly as +1 occupant in feasibility.compute_alpha_max.
+                elif etype == "PersonEntersPtVehicle":
                     vid = elem.get("vehicle")
                     if vid and _track_pax(vid):
                         pax_counts[vid] += 1
                         pax_timeline[vid].append((t, pax_counts[vid]))
+                        n_pax_board += 1
 
-                elif etype == "PersonLeavesVehicle":
+                elif etype == "PersonLeavesPtVehicle":
                     vid = elem.get("vehicle")
                     if vid and _track_pax(vid):
                         pax_counts[vid] = max(0, pax_counts[vid] - 1)
                         pax_timeline[vid].append((t, pax_counts[vid]))
+
+                elif etype == "PersonEntersVehicle":
+                    vid = elem.get("vehicle")
+                    if vid and _track_pax(vid):
+                        n_driver_board += 1
+
+                # ── Stop-facility standing time (tracked buses) ────────
+                elif etype == "VehicleArrivesAtFacility":
+                    vid = elem.get("vehicle")
+                    if vid and _track_pax(vid):
+                        flink = _facility_link(elem.get("facility"))
+                        if flink is not None:
+                            open_stop[vid] = (flink, t)
+
+                elif etype == "VehicleDepartsAtFacility":
+                    vid = elem.get("vehicle")
+                    if vid and vid in open_stop:
+                        flink, t_arr = open_stop.pop(vid)
+                        if t >= t_arr:
+                            stop_intervals[(vid, flink)].append((t_arr, t))
+                            stop_standing[vid][flink] += t - t_arr
 
                 elem.clear()
 
@@ -255,6 +356,12 @@ def parse_events(
         lambda vid: classify_vehicle(vid, bus_prefixes)
     )
 
+    # Per-(vehicle, link) standing totals for Term C's measured extra idle.
+    # Carried on df.attrs so the (df, pax) return signature stays unchanged
+    # for every existing caller.
+    df.attrs["stop_standing"] = {vid: dict(links)
+                                 for vid, links in stop_standing.items()}
+
     if verbose:
         print(f"[parse_events] entered-link events: {n_entered:,}")
         print(f"[parse_events] left-link events matched: {n_left:,}")
@@ -262,11 +369,21 @@ def parse_events(
         print(f"[parse_events] zero-dt links skipped: {n_zero_dt}")
         print(f"[parse_events] overspeed links clamped: {n_overspeed}")
         print(f"[parse_events] total v_mean records: {len(df):,}")
+        print(f"[parse_events] pt boardings on tracked buses: {n_pax_board:,} "
+              f"(drivers seen, not counted: {n_driver_board:,})")
+        if n_driver_board and not n_pax_board:
+            print("[parse_events] WARNING: drivers but ZERO passenger boardings — "
+                  "check the event type written by this MATSim version")
+        print(f"[parse_events] bus standing time subtracted from V_mean: "
+              f"{total_standing_s:,.0f} s over {n_stops_matched:,} stop traversals "
+              f"({len(df.attrs['stop_standing'])} buses with facility events)")
         print(f"[parse_events] vehicle types: {df['vehicle_type'].value_counts().to_dict()}")
 
     pax_dict = dict(pax_timeline)
-    _PARSE_CACHE[cache_key] = (df, pax_dict)
-    return df.copy(), {k: list(v) for k, v in pax_dict.items()}
+    _cache_put(cache_key, (df, pax_dict))
+    out_df = df.copy()
+    out_df.attrs["stop_standing"] = df.attrs["stop_standing"]  # copy() may drop attrs
+    return out_df, {k: list(v) for k, v in pax_dict.items()}
 
 
 # ── Passenger count helper ─────────────────────────────────────────────────
