@@ -68,6 +68,15 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--runs-dir", default=DEFAULT_RUNS)
     ap.add_argument("--out", default=DEFAULT_OUT)
+    # Layer-3 knobs, passed straight through to each cell's subprocess. Use a
+    # different --out per sweep: the driver RESUMES from results_long.csv, so
+    # reusing one directory would skip every cell and reproduce the base sweep.
+    ap.add_argument("--alphas", type=float, nargs="*", default=None,
+                    help="Only these alpha values (e.g. --alphas 0.5 1.0). Default: all.")
+    ap.add_argument("--van-stop-idle", choices=["low", "high", "zero"], default=None)
+    ap.add_argument("--van-load", choices=["mean", "full"], default=None)
+    ap.add_argument("--recon-seed", type=int, default=None)
+    ap.add_argument("--extra-dwell-s", type=float, default=None)
     ap.add_argument("--dwell-in-matsim", action="store_true",
                     help="Runs simulate the freight dwell in the schedule: Term C "
                          "idle uses the measured extra standing (scenario - baseline).")
@@ -97,6 +106,10 @@ def main() -> None:
                                      net_saving_kg_per_day=0.0, net_robust_kg_per_day=0.0))
                 for a in ALPHAS:
                     af = int(a) / 100
+                    # --alphas: a Layer-3 sweep costs one full surface (~6.5 h),
+                    # so it is usually run only where the headline lives.
+                    if args.alphas and af not in args.alphas:
+                        continue
                     if (c, w, int(s), af) in done:
                         continue
                     scen = events(RUNS, f"alpha{a}_{c}_{w}_seed{s}")
@@ -109,6 +122,12 @@ def main() -> None:
                            "--alpha", str(af), "--weight", w, "--output", tmp]
                     if args.dwell_in_matsim:
                         cmd.append("--dwell-in-matsim")
+                    for flag, val in (("--van-stop-idle", args.van_stop_idle),
+                                      ("--van-load", args.van_load),
+                                      ("--recon-seed", args.recon_seed),
+                                      ("--extra-dwell-s", args.extra_dwell_s)):
+                        if val is not None:
+                            cmd += [flag, str(val)]
                     r = subprocess.run(cmd, capture_output=True, text=True)
                     if not os.path.exists(tmp):
                         tail = (r.stderr or r.stdout)[-160:].replace("\n", " ")

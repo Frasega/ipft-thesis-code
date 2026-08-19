@@ -1,26 +1,37 @@
+*.class
+
+# Mobile Tools for Java (J2ME)
+.mtj.tmp/
+
+# Package Files #
+*.jar
+*.war
+*.ear
+
+# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+hs_err_pid*
+
+# Eclipse
+/.settings/
+/.project
+/.classpath
+
+/target/
+/output/
+/test/output/
+/bin/
+
+# IntelliJ
+/.idea/
+*.iml
+
 # Python
 __pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.ipynb_checkpoints/
+*.pyc
 
-# Java / Maven
-target/
-*.class
-*.jar
-
-# Data and run outputs (never committed)
-output/
+# Heavy MATSim data / compressed files (inputs and run outputs live outside git)
 *.zst
-*.xml.gz
 *.gz
-*.events.xml
-*.output_events.xml
-
-# OS / editor
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
+*.xml.gz
+scenarios/*/generated/
+*.log

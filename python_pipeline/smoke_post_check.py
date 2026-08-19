@@ -27,6 +27,7 @@ res = run_scenario(
     transit_prefixes=p.transit_prefixes,
     bus_id_allowlist=p.term_c_bus_ids,
     hb_route_prefixes=p.hb_route_prefixes,
+    pickup_link_ids=p.pickup_link_ids,
     corridor_links_file=str(ROOT / p.corridor_links_file),
 )
 print("\n=== result keys of interest ===")

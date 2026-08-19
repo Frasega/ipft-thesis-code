@@ -205,7 +205,9 @@ def compute_term_a(
 
     # Corridor-local Term A (only available from the Java CSV, and only when
     # corridor_links.txt was present at run time). Far better signal-to-noise
-    # than the region-wide delta: the treatment lives on ~1,400 links.
+    # than the region-wide delta: the treatment lives on the 163 links the vans
+    # actually drive. (Was "~1,400" — that was the old bus-route-plus-250m
+    # buffer, replaced 2026-07-28 because ~91% of it never carried a van.)
     def _bucket_delta(vehicle_class: str) -> float | None:
         b = read_background_co2_from_totals(baseline_events_path, vehicle_class)
         s = read_background_co2_from_totals(scenario_events_path, vehicle_class)

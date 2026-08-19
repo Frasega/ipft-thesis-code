@@ -20,7 +20,8 @@ check_*.py and gather_facts.py / derive_n_freight.py):
 Term A vs Term C vehicle filtering (split deliberately):
   - transit_prefixes: ALL transit vehicles, excluded from Term A background
     (every Rotterdam transit vehicle id starts with "veh_").
-  - term_c_bus_ids: ONLY the 197 line-44 vehicles, used for Term C and the
+  - term_c_bus_ids: ONLY the 98 one-to-many line-44 vehicles (the line has 197
+    in total; the 99 return departures carry no freight), used for Term C and the
     passenger-load timeline (exact ids loaded from line44_vehicle_ids.txt,
     extracted from transitLine 99437 in the schedule).
 """
@@ -94,6 +95,18 @@ class ScenarioPreset:
                                             # make_bus_stop_links.py. Van relief
                                             # and bus-stop queueing are measured
                                             # on DISJOINT sets, reported apart.
+    van_locker_stops: tuple[tuple[str, float, float], ...] = ()  # insert_vans:
+                                            # (link, x, y) of every locker the van
+                                            # serves, in order. Empty = one direct
+                                            # hub->terminal leg (toy). NOT the same
+                                            # set as pickup_link_ids: the bus also
+                                            # serves the bus-only terminus platform,
+                                            # which no car can enter.
+    pickup_link_ids: tuple[str, ...] | None = None  # Term C: the links where the
+                                            # bus actually hands parcels over, in
+                                            # route order. None = space them evenly
+                                            # along the link sequence (toy: there
+                                            # are no real stop locations to use).
 
     @property
     def n_freight_units_real(self) -> float:
@@ -156,6 +169,27 @@ def _rotterdam() -> ScenarioPreset:
         hb_route_prefixes=(),                      # unused when term_c_bus_ids given
         bus_trips_per_day=98,                      # H->B departures only (NOT 197)
         n_pickup_stops=8,                          # 9 H->B stops minus the hub
+        # The 8 delivery stops in route order, from transitLine 99437 (the 93-link
+        # H->B variant, 98 departures). Spacing them evenly by link index instead
+        # dropped a phantom delivery mid-way across the Maas, where the route has
+        # 2.6 km with no stop at all, and under-charged the freight mass by ~8%.
+        # NOTE 121963 (Zuidplein Hoog, the terminus) is the LAST link of the route,
+        # so it never appears in an event-derived link sequence — the divisor stays
+        # n_pickup_stops, see dynamic_mass.build_freight_remaining.
+        pickup_link_ids=("448306", "668963", "448173", "438699",
+                         "178358", "390546", "49628", "121963"),
+        # The same stops on the van side, minus the bus-only terminus: all seven
+        # are bus,car,pt links, so a car-mode van can enter them. Coordinates are
+        # the links' to-node (networkWithRideAndBike.xml.gz). An activity on each
+        # forces the router through them — without this the van took the fastest
+        # car road and touched NONE of the stops the bus serves.
+        van_locker_stops=(("448306", 91409.1, 437465.0),
+                          ("668963", 91432.1, 437135.3),
+                          ("448173", 91471.0, 436243.8),
+                          ("438699", 92015.2, 433846.2),
+                          ("178358", 91974.3, 433544.4),
+                          ("390546", 92101.6, 433426.3),
+                          ("49628",  92665.7, 433474.5)),
         n_freight_units_sim=470,                   # see derive_n_freight.py
         sample_rate=0.10,
         # Van depot links — NOT the bus stop links! The line-44 termini

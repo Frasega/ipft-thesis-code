@@ -14,8 +14,13 @@ The bus speed profile is reconstructed per-link from the SORT cycle library
 (Lin & Niemeier recombination). The delta ΔCO2 per link captures the weight
 effect: heavier bus needs more engine power → more fuel → more CO2.
 
-The passenger dwell time (~3 min/stop, already in MATSim v_mean) cancels in the
-delta — only the EXTRA freight unloading dwell is added via CO2_idle_extra.
+The passenger dwell cancels in the delta — only the EXTRA freight unloading
+dwell is added via CO2_idle_extra. Note what that dwell actually is: the
+line-44 timetable reserves ZERO seconds for it (arrivalOffset ==
+departureOffset at all 9 one-to-many stops), and the line carries ~1 passenger
+per trip, so the boarding time MATSim produces is of the order of a second per
+stop, not the "~3 min" an earlier version of this docstring claimed. The
+cancellation is what makes it harmless either way.
 
 CO2_idle_extra has two modes:
   a-priori (default)  — the 10 s/stop + 5 s/parcel convention, charged in full.
@@ -39,6 +44,7 @@ from __future__ import annotations
 import pandas as pd
 
 from dynamic_mass import (
+    build_freight_remaining,
     build_freight_remaining_uniform,
     compute_extra_dwell_time,
     compute_mbus_on_link,
@@ -163,6 +169,7 @@ def compute_term_c_for_bus(
     stop_standing_scenario: dict | None = None,
     idle_fleet_ids: frozenset[str] | set[str] | None = None,
     min_measured_dwell_fraction: float = 0.10,
+    pickup_link_ids: tuple[str, ...] | None = None,
 ) -> dict:
     """
     Compute Term C [kg CO2 per day] using ONE representative bus trip × F.
@@ -223,10 +230,31 @@ def compute_term_c_for_bus(
     freight_per_trip_kg = total_freight_kg_per_day / F
     units_per_trip = n_freight_units_per_day / F
 
-    # Build freight-remaining profile along the route for ONE trip
-    freight_remaining = build_freight_remaining_uniform(
-        freight_per_trip_kg, link_sequence, n_pickup_stops
-    )
+    # Build freight-remaining profile along the route for ONE trip.
+    # With the real stop links (Rotterdam) the load drops where the bus actually
+    # hands parcels over; without them (toy) they are spaced evenly by index.
+    if pickup_link_ids:
+        wanted = set(pickup_link_ids)
+        matched = [lid for lid in link_sequence if lid in wanted]
+        # The terminus is never in an event-derived sequence (the leg ends there
+        # with 'vehicle leaves traffic', not 'left link'), so one missing stop is
+        # expected. Two or more means the wrong route — e.g. the return
+        # direction, whose stops sit on entirely different links — and that would
+        # silently leave the freight on board for the whole trip.
+        if len(set(matched)) < n_pickup_stops - 1:
+            raise ValueError(
+                f"bus {bus_id}: only {len(set(matched))} of {n_pickup_stops} pickup "
+                f"links found in its {len(link_sequence)}-link sequence. Expected "
+                f"at least {n_pickup_stops - 1} (the terminus link is never in the "
+                f"events). Check that the bus id belongs to the freight direction."
+            )
+        freight_remaining = build_freight_remaining(
+            freight_per_trip_kg, link_sequence, matched, n_deliveries=n_pickup_stops
+        )
+    else:
+        freight_remaining = build_freight_remaining_uniform(
+            freight_per_trip_kg, link_sequence, n_pickup_stops
+        )
 
     has_tt = "travel_time_s" in bus_links.columns
 
@@ -339,6 +367,7 @@ def compute_term_c(
     stop_standing_baseline: dict | None = None,
     stop_standing_scenario: dict | None = None,
     min_measured_dwell_fraction: float = 0.10,
+    pickup_link_ids: tuple[str, ...] | None = None,
 ) -> dict:
     """
     Compute Term C [kg CO2 per day] across the H→B route for one scenario.
@@ -452,6 +481,7 @@ def compute_term_c(
         stop_standing_scenario=stop_standing_scenario,
         idle_fleet_ids=bus_id_allowlist,
         min_measured_dwell_fraction=min_measured_dwell_fraction,
+        pickup_link_ids=pickup_link_ids,
     )
 
     return {

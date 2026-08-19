@@ -30,17 +30,26 @@ distinct v_max values, not a single repeated trapezoid:
     construction in Ch4 (extrapolated SORT-style trapezes).
 
 Deceleration is fixed at 0.8 m/s² for all anchors (UITP spec).
-The cruise duration of each trapeze is calibrated so the full anchor matches
-its nominal v_mean.
+The cruise duration of each trapeze follows analytically from its UITP target
+DISTANCE (d_cruise = distance − d_accel − d_decel); the resulting anchor mean is
+therefore a check, not a fit. Achieved means, which are what bracketing uses:
+SORT1 11.82 · SORT2 17.62 · SORT3 24.85 · Synthetic 36.92 · Synthetic45 44.49 ·
+Synthetic52 52.80 km/h.
 
 Lin & Niemeier (2002) recombination — now meaningful:
   Given a target v_mean from MATSim, find two adjacent anchors that bracket it,
-  pool ALL micro-trips from both anchors (6 distinct trapezes), then randomly
-  draw + concatenate until the time-weighted running mean converges within
-  TOLERANCE_KMH of the target. Because the pool now contains genuinely
-  different trapezes (different v_max → different M·a·v signatures), the
-  random draws produce different sequences each time → reproduces the
-  Lin & Niemeier methodology authentically.
+  then draw + concatenate micro-trips until the time-weighted running mean
+  converges within TOLERANCE_KMH of the target. Each draw comes from the slower
+  anchor's trapezes when the running mean is above target and from the faster
+  anchor's when it is below — the self-correcting rule applied at trapeze level.
+  Because both anchors hold genuinely different trapezes (different v_max →
+  different M·a·v signatures), the sequences differ every time.
+
+Three regimes, mirroring van_cycles (the profile's mean must equal v_mean, or
+the caller's t_actual/t_sort scaling is no longer distance-correct):
+  below the slowest anchor -> amplitude-scaled SORT1 (creep);
+  in band                  -> micro-trip recombination;
+  above the fastest anchor -> constant free-flow cruise.
 
 References:
   UITP (2004) "SORT — Standardised On-Road Test cycles", Chapter IV
@@ -63,6 +72,8 @@ TOLERANCE_KMH = 0.5          # convergence tolerance
 TOLERANCE_MS = TOLERANCE_KMH / 3.6
 N_MAX_DRAWS = 500             # max micro-trip draws before accepting best result
 UITP_DECEL_MS2 = 0.8          # UITP deceleration (constant across anchors)
+CRUISE_LEN_S = 120            # length of the free-flow cruise block above the
+                              # fastest anchor (arbitrary: cancels in t_actual/t_sort)
 
 
 # ── Trapeze specification (one micro-trip) ─────────────────────────────────
@@ -256,19 +267,20 @@ def recombine_microtrips(target_vmean_ms: float, rng_seed: int = 42) -> np.ndarr
     lo_anchor = ANCHORS[0]
     hi_anchor = ANCHORS[-1]
 
-    if target_vmean_ms <= lo_anchor.vmean_ms:
-        warnings.warn(
-            f"target v_mean {target_vmean_ms*3.6:.1f} km/h < SORT1 "
-            f"({lo_anchor.vmean_ms*3.6:.1f} km/h) — using SORT1 directly."
-        )
-        return lo_anchor.full_cycle.copy()
+    # Out of band: recombination cannot help — concatenating micro-trips never
+    # averages below the slowest ingredient nor above the fastest. Same two
+    # regimes as the van (van_cycles.reconstruct_van_profile), and for the same
+    # reason: the caller's t_actual/t_sort scaling is only distance-correct if
+    # the profile's mean equals v_mean. Returning the anchor unchanged breaks
+    # that — a link crawled at 0.4 km/h would be charged as SORT1's 11.8.
+    if target_vmean_ms < lo_anchor.vmean_ms:
+        # Creep: amplitude-scale the slowest anchor so its mean = target.
+        # Keeps the stop-and-go shape (zeros stay zeros), fixes the distance.
+        return lo_anchor.full_cycle * (target_vmean_ms / lo_anchor.vmean_ms)
 
-    if target_vmean_ms >= hi_anchor.vmean_ms:
-        warnings.warn(
-            f"target v_mean {target_vmean_ms*3.6:.1f} km/h > Synthetic anchor "
-            f"({hi_anchor.vmean_ms*3.6:.1f} km/h) — using Synthetic directly."
-        )
-        return hi_anchor.full_cycle.copy()
+    if target_vmean_ms > hi_anchor.vmean_ms:
+        # Free-flow: constant cruise, a(t) = 0 — no stop-and-go to invent.
+        return np.full(CRUISE_LEN_S, target_vmean_ms)
 
     low, high = _bracket(target_vmean_ms)
     pool = low.microtrips + high.microtrips  # 6 distinct trapezes

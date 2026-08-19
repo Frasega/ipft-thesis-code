@@ -242,47 +242,50 @@ EXTRA_DWELL_PER_UNIT_S = 5.0
 # Placeholder: TCQSM suggests 5–15 s of overhead beyond passenger boarding;
 # IPFT-specific literature (Ghilas 2018; Cheng 2024) treats it as a
 # calibration parameter. Default 10 s is conservative midrange.
-# IMPORTANT for Term C interpretation: with 5 pickup stops × F=60 trips,
-# this overhead drives the bulk of CO2_idle_extra at low units_per_stop.
-# At α=1.0 medium: ~10 s × 5 stops × 60 trips × 0.9/3600 L/s × 2.65 = 1.99 kg/day
-# (vs 12.6 kg/day with the old 30 s placeholder). Sensitivity-analyse 0–30 s.
+# TOY illustration (5 pickup stops × F=60): this overhead drives the bulk of
+# CO2_idle_extra at low units_per_stop. At α=1.0 medium:
+# ~10 s × 5 stops × 60 trips × 0.9/3600 L/s × 2.65 = 1.99 kg/day.
+# ROTTERDAM has 8 stops × F=98; see the measured figures below.
 EXTRA_DWELL_FIXED_OVERHEAD_S = 10.0
 
-# DWELL TIME MODEL — SERIAL vs PARALLEL (decision deferred 2026-05-26)
-# Current implementation in dynamic_mass.compute_extra_dwell_time is SERIAL:
-# every freight stop adds `fixed_overhead + per_unit × n_units` to the bus
-# total dwell, IN ADDITION to the ~3 min passenger dwell already in MATSim's
-# v_mean. This is the CONSERVATIVE choice — it overestimates Term C.
+# DWELL TIME MODEL — SERIAL vs PARALLEL: SETTLED 2026-08, by measurement.
 #
-# A more realistic PARALLEL model would assume freight is unloaded by a
-# dedicated handler simultaneously with passenger boarding, so extra dwell
-# is only the EXCESS over passenger dwell:
-#     extra_dwell = max(0, freight_unload_time - 180s_passenger_baseline)
+# The premise this block used to rest on was FALSE. It assumed a "~3 min
+# passenger dwell already in MATSim's v_mean", against which parallel unloading
+# would be free (extra_dwell = max(0, freight_unload − 180 s) = 0).
 #
-# Under the parallel model, with our toy scenarios (≤7 units/stop):
-#     freight_unload = 10 + 5×6.67 = 43.3s  <<  180s passenger dwell
-#     → extra_dwell = 0 → CO2_idle_extra = 0
-#     → Term C drops to ~0.5-1.5 kg/day (only the running/mass component)
+# Measured on the Rotterdam schedule and events:
+#   - the line-44 timetable reserves ZERO seconds for passenger dwell
+#     (arrivalOffset == departureOffset at all 9 one-to-many stops);
+#   - the line carries ~1 passenger per trip (109 boardings over 98 trips),
+#     so MATSim produces of the order of a second of boarding per stop.
 #
-# Why we keep SERIAL for the toy thesis:
-#   - Conservative: overestimating Term C makes the NET CO2 saving look WORSE
-#     than parallel would. Robust IPFT conclusions hold under both models.
-#   - Operational reality: IPFT freight handling protocols (signature, scan,
-#     locker access) often DO add serial time even with dedicated handlers.
-#   - Sensitivity safe: results are not load-bearing on this assumption since
-#     Term B dominates by 100×.
+# So there is no 180 s to hide behind. With dwell_pax ≈ 1-2 s against ~40 s of
+# parcels at α=1, serial gives ~42 s and parallel ~40 s: under 5% apart. The
+# choice is numerically empty on this line, and that is the finding to report —
+# not a convention to defend.
 #
-# TODO for Rotterdam (Phase 5): introduce BUS_FREIGHT_DWELL_OVERLAP_FRACTION
-# (0=serial, 1=parallel) and run sensitivity over {0, 0.5, 1.0}. If real
-# operator data is available (RET, PostNL pilot), use measured overlap.
-DWELL_MODEL = "serial"  # "serial" | "parallel" (current: serial, conservative)
+# We keep SERIAL, for two reasons that survive the correction:
+#   - it is the conservative side (longer stop → more blocking → smaller net),
+#   - MATSim's minimumStopDuration gives it natively, while parallel would need
+#     a custom TransitStopHandler in Java for a <5% difference.
+#
+# NOTE: since the dwell moved INSIDE MATSim (2026-07-30) these seconds are an
+# INPUT to the simulation, written into the transit schedule by
+# make_dwell_schedules.py — not a post-processing lever. Changing them requires
+# regenerating the schedules and re-running. Under run_pipeline's
+# --dwell-in-matsim the idle charged is the MEASURED extra standing, not the
+# a-priori value computed from the constants above.
+DWELL_MODEL = "serial"  # settled: parallel differs by <5% on this line
 
 # Vehicle ID prefixes used to classify vehicles from MATSim events.xml — TOY values.
 # ROTTERDAM uses TWO separate filters (see scenario_presets.py, decided 2026-06-10):
 #   - transit_prefixes ("veh_",): ALL transit vehicles, excluded from Term A
 #     background (their HBEFA values are fake pass-car numbers);
-#   - term_c_bus_ids: the exact 197 line-44 vehicle ids (transitLine 99437),
-#     used for Term C and the passenger-load timeline. A prefix tuple would
-#     risk matching vehicles outside the line-44 range.
+#   - term_c_bus_ids: the exact 98 one-to-many line-44 vehicle ids (transitLine
+#     99437 has 197 vehicles in total; only the 98 hub→terminal departures carry
+#     freight, and the code loads exactly those from
+#     line44_hb_vehicle_ids.txt). Used for Term C and the passenger-load
+#     timeline. A prefix tuple would risk matching vehicles outside line 44.
 BUS_ID_PREFIXES = ("EW_lower_", "EW_upper_", "NS_")
 VAN_ID_PREFIX = "backup_van_"

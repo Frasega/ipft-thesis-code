@@ -11,10 +11,13 @@ This per-link mass is used in term_c.py to compute the CO2 delta from weight.
 Using a single constant M_bus would systematically overestimate Term C on later
 route segments where freight has already been delivered.
 
-For the toy simulation (Phase 1), pickup points are assumed to be equally spaced
-along the bus route, each delivering 1/N_stops of total freight.
-Rotterdam runs (Phase 5) use the actual bus stop sequence with explicit pickup
-point locations.
+Two ways to place the pickup points, and the caller chooses:
+  - build_freight_remaining(..., pickup_link_ids) — the real stop links, in route
+    order. Rotterdam passes them from ScenarioPreset.pickup_link_ids.
+  - build_freight_remaining_uniform(..., n_pickup_stops) — evenly spaced by link
+    INDEX. The toy has no real stop locations, so this is the honest choice
+    there; on a real route it drops parcels wherever the index happens to fall,
+    which on line 44 meant a phantom delivery in the middle of the Maas crossing.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ def build_freight_remaining(
     total_freight_kg: float,
     link_sequence: list[str],
     pickup_link_ids: list[str],
+    n_deliveries: int | None = None,
 ) -> dict[str, float]:
     """
     Build a {link_id: freight_remaining_kg} mapping for one bus trip.
@@ -42,6 +46,14 @@ def build_freight_remaining(
     total_freight_kg : total freight loaded onto the bus at the hub
     link_sequence    : ordered list of link IDs along the bus route
     pickup_link_ids  : subset of link_sequence where freight is delivered
+    n_deliveries     : how many shares to split the load into. Defaults to
+        len(pickup_link_ids). Pass the nominal stop count when some stops are
+        not visible in link_sequence: MATSim emits 'vehicle leaves traffic'
+        instead of 'left link' on a leg's last link, so an event-derived
+        sequence never contains the terminus. Splitting by the visible stops
+        instead would inflate every delivery; splitting by the nominal count
+        leaves the last share on board across the modelled part of the route,
+        which is what physically happens.
 
     Returns
     -------
@@ -50,7 +62,7 @@ def build_freight_remaining(
     if not pickup_link_ids or total_freight_kg <= 0:
         return {lid: 0.0 for lid in link_sequence}
 
-    n_pickups = len(pickup_link_ids)
+    n_pickups = n_deliveries if n_deliveries else len(pickup_link_ids)
     delta_per_stop = total_freight_kg / n_pickups
     pickup_set = set(pickup_link_ids)
 
@@ -183,8 +195,12 @@ def compute_extra_dwell_time(
     Linear model: extra_dwell = fixed_overhead + extra_dwell_per_unit × n_units
     The fixed overhead covers door opening, ramp deployment, signature/handoff.
 
-    Only this increment is added to CO2_idle in Term C.
-    The normal ~3 min passenger dwell already in MATSim v_mean cancels in the delta.
+    Only this increment is added to CO2_idle in Term C. The passenger dwell
+    cancels in the delta. It is also far smaller than an earlier version of
+    this docstring claimed ("~3 min"): the line-44 timetable reserves zero
+    seconds for it (arrivalOffset == departureOffset at every one-to-many
+    stop) and the line carries ~1 passenger per trip, so MATSim produces of
+    the order of a second per stop.
 
     Parameters
     ----------

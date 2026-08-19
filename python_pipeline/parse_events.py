@@ -158,7 +158,9 @@ def parse_events(
         'bus' classification (default: parameters.BUS_ID_PREFIXES — toy).
         For Rotterdam pass ("veh_",) so ALL transit is excluded from background.
     pax_bus_ids : if given, the passenger timeline is tracked ONLY for these
-        exact vehicle ids (e.g. the 197 line-44 buses). If None, all vehicles
+        exact vehicle ids (Rotterdam: the 98 one-to-many line-44 departures —
+        line 44 has 197 vehicles in all, but only those 98 carry freight).
+        If None, all vehicles
         matching bus_prefixes are tracked (toy behaviour).
 
     Returns
@@ -227,6 +229,7 @@ def parse_events(
     n_entered = 0
     n_left = 0
     n_stuck = 0
+    n_parked = 0     # legs ended on a link (entry dropped, never a traversal)
     n_zero_dt = 0
     n_overspeed = 0
     n_pax_board = 0      # PersonEntersPtVehicle on tracked buses (real passengers)
@@ -294,6 +297,22 @@ def parse_events(
                                     dt = link_lengths[lid] / v  # recompute after clamp
                                 if _keep(vid, lid):
                                     records.append((vid, lid, v, t_enter, dt))
+
+                # ── End of a leg: the vehicle parks on this link ───────
+                # MATSim does NOT emit 'left link' when a vehicle ends its leg:
+                # it emits 'vehicle leaves traffic'. Without this branch the
+                # pending entry stays in entry_times and is matched, hours
+                # later, by the 'left link' of the NEXT leg from the same spot,
+                # turning a parked activity into one very slow traversal.
+                # (Counts alone never reveal it: each leg also loses the
+                # 'entered link' of its first link to 'vehicle enters traffic',
+                # so entered and left stay balanced.)
+                elif etype == "vehicle leaves traffic":
+                    vid = elem.get("vehicle")
+                    lid = elem.get("link")
+                    if vid and lid:
+                        if entry_times.pop((vid, lid), None) is not None:
+                            n_parked += 1
 
                 # ── Stuck vehicle: discard all pending entries ─────────
                 elif etype == "stuckAndAbort":
@@ -366,6 +385,7 @@ def parse_events(
         print(f"[parse_events] entered-link events: {n_entered:,}")
         print(f"[parse_events] left-link events matched: {n_left:,}")
         print(f"[parse_events] stuck vehicles discarded: {n_stuck}")
+        print(f"[parse_events] legs ended on a link (parked, entry dropped): {n_parked:,}")
         print(f"[parse_events] zero-dt links skipped: {n_zero_dt}")
         print(f"[parse_events] overspeed links clamped: {n_overspeed}")
         print(f"[parse_events] total v_mean records: {len(df):,}")

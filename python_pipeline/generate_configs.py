@@ -206,7 +206,12 @@ def patch_config(
             for p in ps.iter("param")
             if p.get("name") == "activityType"
         }
-        for act_type, duration in [("freight_hub", "01:00:00"), ("freight_delivery", "08:00:00")]:
+        # freight_locker: the kerbside handover stops the van drives through.
+        # Zero-duration in the plan; typicalDuration only has to exist for scoring
+        # not to reject the activity type.
+        for act_type, duration in [("freight_hub", "01:00:00"),
+                                   ("freight_locker", "00:01:00"),
+                                   ("freight_delivery", "08:00:00")]:
             if act_type not in existing_types:
                 ps = ET.SubElement(container, "parameterset")
                 ps.set("type", "activityParams")
@@ -242,6 +247,14 @@ def patch_config(
                "../sample_41_EFA_ColdStart_vehcat_2020average.csv")
     _set_param(em_mod, "detailedVsAverageLookupBehavior", "directlyTryAverageTable")
     _set_param(em_mod, "nonScenarioVehicles", "ignore")
+    # The factor set shipped with this scenario holds TWO traffic situations, not
+    # four. MATSim's default lookup (AverageSpeed) picks a single situation, which
+    # with two rows degenerates into a step at 12.49 km/h: above it every speed
+    # yields the same factor, so a bus slowing traffic from 30 to 20 km/h registers
+    # nothing. StopAndGoFraction splits the link into a free-flow and a stop&go
+    # share whose times reproduce the observed speed, and blends the same two
+    # factors — a documented option of the model, not a modification.
+    _set_param(em_mod, "emissionsComputationMethod", "StopAndGoFraction")
     # Rotterdam: emission events would blow the events file up to ~8 GB/run.
     # CO2 totals are aggregated by the Java Co2TotalsHandler into co2_totals.csv
     # (term_a.py reads that CSV when present).
@@ -352,6 +365,7 @@ def generate_all(
                 terminal_x=preset.terminal_xy[0], terminal_y=preset.terminal_xy[1],
                 van_mode=preset.van_mode,
                 spread_minutes=preset.van_spread_minutes,
+                locker_stops=preset.van_locker_stops,
             )
 
             seeds_for_this_run = list(SEEDS)

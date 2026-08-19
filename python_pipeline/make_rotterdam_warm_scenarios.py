@@ -39,7 +39,9 @@ tree, so the pre-dwell surface stays untouched:
 
     python python_pipeline/make_dwell_schedules.py --blocking true
     python python_pipeline/make_rotterdam_warm_scenarios.py --dwell-tag blocking
-    python python_pipeline/scenario_runner.py --scenario rotterdam --filter RDWELL ...
+    python python_pipeline/scenario_runner.py --scenario rotterdam --filter RDWELLBLOCKING ...
+        (--filter is a plain substring match: "RDWELL" would launch the bay
+         variant too, i.e. 120 runs instead of 60)
     python python_pipeline/rotterdam_surface_robust.py \
         --runs-dir D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs \
         --out output/sensitivity_rotterdam_dwell_blocking --dwell-in-matsim
@@ -78,11 +80,29 @@ _KEEP_STRATEGY = "ChangeExpBeta"
 
 
 def rotterdam_seed(congestion: str) -> str:
-    """Path to the frozen longbase output_plans for this congestion level."""
+    """Path to the frozen longbase output_plans for this congestion level.
+
+    The STRIPPED file wins when present. The LONGBASE ends with 5 plans per
+    person, and one warm iteration does not stop ChangeExpBeta from picking a
+    different one: inserting a different number of vans shifts MATSim's random
+    stream, thousands of background agents re-pick, and on the 18 bus-stop links
+    that noise is the size of the signal. Keeping only the plan each agent was
+    already running changes nobody's behaviour and removes the re-pick.
+
+    Produced by:
+        python python_pipeline/strip_selected_plans.py IN.xml.zst OUT_stripped.xml.gz
+    """
     d = Path("D:/TesiOutputs") / _SEED_DIRS[congestion]
+    for name in ("MRDH_10pct.output_plans_stripped.xml.gz",
+                 "output_plans_stripped.xml.gz"):
+        if (d / name).exists():
+            return str(d / name)
     for name in ("MRDH_10pct.output_plans.xml.zst", "output_plans.xml.zst",
                  "output_plans.xml.gz", "output_plans.xml"):
         if (d / name).exists():
+            print(f"[warn] {congestion}: using the UNSTRIPPED longbase plans "
+                  f"({name}) — ChangeExpBeta will re-pick between baseline and "
+                  f"scenario. Run strip_selected_plans.py first.")
             return str(d / name)
     raise FileNotFoundError(
         f"longbase output_plans not found in {d} — run the {congestion} LONGBASE first "
@@ -173,6 +193,7 @@ def main() -> None:
                         terminal_x=preset.terminal_xy[0], terminal_y=preset.terminal_xy[1],
                         van_mode=preset.van_mode, spread_minutes=preset.van_spread_minutes,
                         n_vans_override=n_tours,
+                        locker_stops=preset.van_locker_stops,
                     )
                 sched = (dwell_schedule_for(alpha, dwell_tag, sched_dir)
                          if dwell_tag else None)

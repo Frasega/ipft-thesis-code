@@ -179,6 +179,34 @@ def _output_events_for_config(config_path: str) -> Path | None:
     return base / "output_events.xml.zst"
 
 
+def _prune_iters(config_path: str) -> None:
+    """Delete the run's ITERS/ directory once the run has finished.
+
+    A Rotterdam warm run writes 3 GB, of which 2 GB is ITERS: it.1 holds a
+    byte-identical copy of the events file that MATSim also puts in the run
+    root, and it.0 holds iteration 0, which nothing reads. The pipeline only
+    ever opens the root output_events.xml.zst (ITERS is a fallback for when
+    that is missing) plus co2_totals.csv, both of which are left untouched.
+
+    Without this a 60-run batch needs 180 GB instead of 60 and fills the disk
+    part-way through. Pruning per run also keeps the peak flat rather than
+    letting it build up and then cleaning at the end.
+    """
+    import shutil
+    out_dir = _output_events_for_config(config_path).parent
+    iters = out_dir / "ITERS"
+    if not iters.is_dir():
+        return
+    # Refuse to prune unless the file the pipeline actually reads is present,
+    # so an interrupted or failed run never loses its only copy.
+    if not any(out_dir.glob("*output_events.xml.zst")):
+        print(f"[runner] NOT pruning {iters}: no output_events in the run root")
+        return
+    freed = sum(f.stat().st_size for f in iters.rglob("*") if f.is_file())
+    shutil.rmtree(iters, ignore_errors=True)
+    print(f"[runner] pruned ITERS ({freed/2**30:.1f} GB) from {out_dir.name}")
+
+
 def run_all(
     config_dir: str = "scenarios/ipft_toy/generated",
     jar_path: str | None = None,
@@ -186,6 +214,7 @@ def run_all(
     jvm_heap: str = "8g",
     verbose: bool = False,
     skip_existing: bool = False,
+    prune_iters: bool = True,
 ) -> list[dict]:
     """
     Run all configs in config_dir (optionally filtered by substring).
@@ -198,7 +227,17 @@ def run_all(
 
     configs = sorted(glob.glob(f"{config_dir}/config_*.xml"))
     if config_filter:
-        configs = [c for c in configs if config_filter in Path(c).name]
+        # A plain substring cannot select one variant AND one weight: "medium"
+        # also matches the RWARM and RDWELLBAY configs, i.e. it would launch
+        # three times the intended batch. A filter containing * or ? is treated
+        # as a glob instead, so "*RDWELLBLOCKING*medium*" selects exactly the
+        # 20 medium cells of the blocking variant.
+        if any(ch in config_filter for ch in "*?["):
+            import fnmatch
+            configs = [c for c in configs
+                       if fnmatch.fnmatch(Path(c).name, config_filter)]
+        else:
+            configs = [c for c in configs if config_filter in Path(c).name]
 
     if not configs:
         print(f"[runner] No configs found in {config_dir} (filter={config_filter!r})")
@@ -221,6 +260,8 @@ def run_all(
 
     for config in configs:
         r = run_one(config, jar, jvm_heap=jvm_heap, verbose=verbose)
+        if r["ok"] and prune_iters:
+            _prune_iters(config)
         results.append(r)
 
     total_elapsed = time.time() - total_t0
@@ -258,6 +299,12 @@ if __name__ == "__main__":
                    help="Stream MATSim stdout to console (noisy but useful for debugging)")
     p.add_argument("--skip-existing", action="store_true",
                    help="Skip runs whose output_events.xml.zst already exists")
+    p.add_argument("--keep-iters", action="store_true",
+                   help="Keep each run's ITERS/ directory. By default it is deleted "
+                        "once the run finishes: on Rotterdam it is 2 of the 3 GB a run "
+                        "writes, holding a byte-identical copy of the root events file "
+                        "plus iteration 0, neither of which the pipeline reads. Keeping "
+                        "it turns a 60-run batch from 60 GB into 180 GB.")
     args = p.parse_args()
 
     try:
@@ -286,5 +333,6 @@ if __name__ == "__main__":
             jvm_heap=args.heap,
             verbose=args.verbose,
             skip_existing=args.skip_existing,
+            prune_iters=not args.keep_iters,
         )
         sys.exit(0 if all(r["ok"] for r in results) else 1)

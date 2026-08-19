@@ -126,9 +126,12 @@ def compute_co2_idle(
     """
     CO2 from diesel engine idling at bus stop.
 
-    Only the EXTRA dwell time for freight unloading should be passed here —
-    the normal passenger dwell (~3 min/stop already in MATSim v_mean) cancels
-    when taking the Term C delta (CO2_with_freight − CO2_without_freight).
+    Only the EXTRA dwell time for freight unloading should be passed here. The
+    passenger dwell cancels when taking the Term C delta (CO2_with_freight −
+    CO2_without_freight). It is also far smaller than an earlier version of this
+    docstring claimed ("~3 min/stop"): the line-44 timetable reserves ZERO
+    seconds for it and the line carries about one passenger per trip, so MATSim
+    produces of the order of a second per stop.
     """
     liters = idle_rate_l_per_s * dwell_time_s
     return liters * CO2_FACTOR_KG_PER_L

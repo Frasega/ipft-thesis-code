@@ -91,16 +91,37 @@ def _build_van_xml(
     terminal_y: float,
     departure_time: str,
     van_mode: str = "freight",
+    locker_stops: tuple[tuple[str, float, float], ...] = (),
 ) -> str:
     """
     Return XML string for one freight van agent.
     Subpopulation is stored as a child <attributes> element (MATSim v6 format),
     NOT as an XML attribute on <person> (which is not declared in population_v6.dtd).
+
+    locker_stops = ((link_id, x, y), ...) — the kerbside lockers the van serves,
+    in order. Each becomes an activity ON that link, which is what forces the
+    router to take the van there: a single hub->terminal leg is free to pick the
+    fastest car road and, on the Rotterdam corridor, missed every locker the bus
+    serves. That contradicted the thesis, which states the van visits the same
+    lockers, and it put the congestion relief on the wrong streets.
+
+    The activities have ZERO duration: the van leaves the network for an instant
+    and departs again, so the handover is NOT simulated as a stop. The per-stop
+    idle stays an a-priori post-processing term and nothing is counted twice.
+    A car-mode agent performing an activity is off the road anyway (it parks
+    off-network), so the van still does not block traffic — now as an explicit,
+    reportable property rather than an accident of the routing.
     """
     # Toy: mode='freight' — bound to the `freight` vehicleType in emission_vehicles.xml
     # (HBEFA LCV, PCE 1.5), keeping van HBEFA emissions separable from background.
     # Rotterdam: mode='car' — vans are filtered by id prefix instead; their HBEFA
     # values are discarded anyway (Term B uses the longitudinal-dynamics formula).
+    leg = f'\t\t\t<leg mode="{van_mode}">\n\t\t\t</leg>\n'
+    middle = "".join(
+        f'\t\t\t<activity type="freight_locker" link="{lid}" '
+        f'x="{x}" y="{y}" max_dur="00:00:00" />\n' + leg
+        for lid, x, y in locker_stops
+    )
     return (
         f'\t<person id="{van_id}">\n'
         f'\t\t<attributes>\n'
@@ -109,9 +130,9 @@ def _build_van_xml(
         f'\t\t<plan selected="yes">\n'
         f'\t\t\t<activity type="freight_hub" link="{hub_link}" '
         f'x="{hub_x}" y="{hub_y}" end_time="{departure_time}" />\n'
-        f'\t\t\t<leg mode="{van_mode}">\n'
-        f'\t\t\t</leg>\n'
-        f'\t\t\t<activity type="freight_delivery" link="{terminal_link}" '
+        + leg
+        + middle
+        + f'\t\t\t<activity type="freight_delivery" link="{terminal_link}" '
         f'x="{terminal_x}" y="{terminal_y}" />\n'
         f'\t\t</plan>\n'
         f'\t</person>\n'
@@ -131,6 +152,7 @@ def insert_vans(
     departure_time: str = PEAK_DEPARTURE,
     van_mode: str = "freight",
     spread_minutes: float = 0.0,
+    locker_stops: tuple[tuple[str, float, float], ...] = (),
     verbose: bool = True,
 ) -> None:
     """
@@ -158,6 +180,7 @@ def insert_vans(
             terminal_link=terminal_link, terminal_x=terminal_x, terminal_y=terminal_y,
             departure_time=_dep(i),
             van_mode=van_mode,
+            locker_stops=locker_stops,
         )
         for i in range(n_vans)
     )
@@ -175,6 +198,11 @@ def insert_vans(
         spread_note = f" spread over {spread_minutes:.0f} min" if spread_minutes > 0 else ""
         print(f"[insert_vans] Added {n_vans} vans (mode={van_mode}) -> {output_path}")
         print(f"  departure: {departure_time}{spread_note}  hub: {hub_link}  terminal: {terminal_link}")
+        if locker_stops:
+            print(f"  lockers served (zero-duration stops): "
+                  f"{', '.join(l for l, _, _ in locker_stops)}")
+        else:
+            print("  lockers: NONE — single hub->terminal leg (toy behaviour)")
 
 
 def create_plans_file(
@@ -193,6 +221,7 @@ def create_plans_file(
     van_mode: str = "freight",
     spread_minutes: float = 0.0,
     n_vans_override: int | None = None,
+    locker_stops: tuple[tuple[str, float, float], ...] = (),
 ) -> int:
     """
     Create one plans file for a given (alpha, congestion) combination.
@@ -215,6 +244,7 @@ def create_plans_file(
         departure_time=departure,
         van_mode=van_mode,
         spread_minutes=spread_minutes,
+        locker_stops=locker_stops,
         verbose=verbose,
     )
     return n_vans

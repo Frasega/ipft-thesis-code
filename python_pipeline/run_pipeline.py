@@ -112,6 +112,21 @@ def run_scenario(
         bus_trips_per_day = BUS_TRIPS_PER_DAY
     if sample_rate <= 0 or sample_rate > 1:
         raise ValueError(f"sample_rate must be in (0, 1], got {sample_rate}")
+    # Once the dwell is stamped in the schedule, the handling time stops being a
+    # free re-pricing lever: those seconds are an INPUT to MATSim, so changing
+    # them needs make_dwell_schedules.py + new runs. Under use_measured_idle the
+    # a-priori value survives only inside the sanity threshold, so a sweep would
+    # return the same numbers with no warning. Checked here, before the 8-minute
+    # event parse, so the sweep fails immediately instead of at the end.
+    if dwell_in_matsim and extra_dwell_per_unit_s is not None:
+        raise ValueError(
+            f"extra_dwell_per_unit_s={extra_dwell_per_unit_s} given together with "
+            f"dwell_in_matsim=True. With the dwell simulated in the schedule, Term C "
+            f"charges the MEASURED standing: this value would change nothing except "
+            f"the guard threshold, and the sweep would silently reproduce the "
+            f"unswept numbers. To vary the handling time on dwell runs, regenerate "
+            f"the schedules with a different EXTRA_DWELL_PER_UNIT_S and re-run "
+            f"MATSim; to keep it a free lever, drop --dwell-in-matsim.")
     scale = 1.0 / sample_rate
     n_freight_units_real = n_freight_units / sample_rate
 

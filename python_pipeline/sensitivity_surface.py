@@ -16,6 +16,8 @@ Post-processing sensitivity knobs (no new MATSim runs needed):
   --van-load {mean,full}            tour evaluation mass (mean = tare+payload/2)
   --recon-seed                      micro-trip reconstruction RNG seed
   --extra-dwell-s                   per-parcel freight-handling dwell (TCQSM 3-15 s)
+                                    NOT free once the dwell is inside MATSim:
+                                    rejected together with --dwell-in-matsim
 
 Usage:
     python sensitivity_surface.py --scenario toy --per-weight-runs \
@@ -146,6 +148,7 @@ def build_surface(
             transit_prefixes=preset.transit_prefixes,
             bus_id_allowlist=preset.term_c_bus_ids,
             hb_route_prefixes=preset.hb_route_prefixes,
+            pickup_link_ids=preset.pickup_link_ids,
             corridor_links_file=preset.corridor_links_file,
             bus_stop_links_file=preset.bus_stop_links_file,
         )
@@ -360,7 +363,10 @@ def main() -> None:
                         "the cell ranking do not depend on the draw). Default: 42.")
     p.add_argument("--extra-dwell-s", type=float, default=None,
                    help="Per-parcel freight-handling dwell seconds (Ch4 layer-3 sweep, "
-                        "TCQSM range 3-15 s). Default: parameters.EXTRA_DWELL_PER_UNIT_S.")
+                        "TCQSM range 3-15 s). Default: parameters.EXTRA_DWELL_PER_UNIT_S. "
+                        "Free only on PRE-dwell runs: with --dwell-in-matsim the seconds "
+                        "are an input to the schedule, so this is rejected rather than "
+                        "silently returning identical numbers.")
     p.add_argument("--no-resume", action="store_true",
                    help="Ignore an existing results_long.csv and recompute every cell. "
                         "By default the sweep RESUMES: cells already in that file are "
