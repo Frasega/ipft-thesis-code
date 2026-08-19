@@ -4,13 +4,17 @@ polyline (blue), the stops along it (dots), and labelled hub/terminal endpoints.
 Coordinates are EPSG:28992 (RD New, metres) -> plotted with equal aspect.
 """
 import gzip
+import os
 import re
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 
 HERE = Path(__file__).parent
-OUT = Path(r"c:\Users\frare\OneDrive\Desktop\Tesi documents\Tesi Regazzoni\figures\corridor_line44_map.png")
+OUT = Path(os.environ.get(
+    "IPFT_FIGURES_DIR",
+    r"c:\Users\frare\OneDrive\Desktop\Tesi documents\Tesi Regazzoni\figures",
+)) / "corridor_line44_map.png"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 HB_FIRST = "2522467.link:174131"  # Centraal perron BB (first H->B stop)
 

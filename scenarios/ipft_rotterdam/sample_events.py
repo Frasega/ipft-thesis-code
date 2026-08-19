@@ -1,11 +1,13 @@
 """Campiona i primi ~200MB decompressi del file eventi smoke e conta i tipi."""
 import re
 from collections import Counter
+from pathlib import Path
 
 import zstandard as zstd
 
-PATH = (r"c:\Users\frare\OneDrive\Desktop\Tesi documents\matsim-example-project-master"
-        r"\output\ipft_rotterdam_smoke\ITERS\it.0\MRDH_10pct.0.events.xml.zst")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PATH = (_PROJECT_ROOT / "output" / "ipft_rotterdam_smoke" / "ITERS" / "it.0"
+        / "MRDH_10pct.0.events.xml.zst")
 
 LIMIT = 200_000_000  # bytes decompressi
 types = Counter()

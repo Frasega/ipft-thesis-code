@@ -1,9 +1,7 @@
 import re
+from pathlib import Path
 
-cfg = open(
-    r"c:\Users\frare\OneDrive\Desktop\Tesi documents\matsim-example-project-master\scenarios\ipft_rotterdam\config.xml",
-    encoding="utf-8",
-).read()
+cfg = (Path(__file__).resolve().parent / "config.xml").read_text(encoding="utf-8")
 
 for m in re.finditer(r'<module name="([^"]+)"\s*>', cfg):
     name = m.group(1)

@@ -1,71 +1,151 @@
-# matsim-example-project
+# IPFT thesis code
 
-A small example of how to use MATSim as a library.
+Code accompanying the MSc thesis on **Integrated Passenger and Freight Transport (IPFT)**:
+an agent-based model, built on the open-source MATSim framework, that computes the net CO2
+balance of shifting a fraction of parcel deliveries from dedicated vans onto scheduled
+public-transport buses.
 
-By default, this project uses the latest (pre-)release. In order to use a different version, edit `pom.xml`.
+The net daily saving is decomposed as
 
-A recommended directory structure is as follows:
-* `src` for sources
-* `original-input-data` for original input data (typically not in MATSim format)
-* `scenarios` for MATSim scenarios, i.e. MATSim input and output data.  A good way is the following:
-  * One subdirectory for each scenario, e.g. `scenarios/mySpecialScenario01`.
-  * This minimally contains a config file, a network file, and a population file.
-  * Output goes one level down, e.g. `scenarios/mySpecialScenario01/output-from-a-good-run/...`.
-  
-  
-### Import into eclipse
-
-1. download a modern version of eclipse. This should have maven and git included by default.
-1. `file->import->git->projects from git->clone URI` and clone as specified above.  _It will go through a 
-sequence of windows; it is important that you import as 'general project'._
-1. `file->import->maven->existing maven projects`
-
-Sometimes, step 3 does not work, in particular after previously failed attempts.  Sometimes, it is possible to
-right-click to `configure->convert to maven project`.  If that fails, the best thing seems to remove all 
-pieces of the failed attempt in the directory and start over.
-
-### Import into IntelliJ
-
-`File -> New -> Project from Version Control` paste the repository url and hit 'clone'. IntelliJ usually figures out
-that the project is a maven project. If not: `Right click on pom.xml -> import as maven project`.
-
-### Java Version
-
-The project uses Java 25. Usually a suitable SDK is packaged within IntelliJ or Eclipse. Otherwise, one must install a
-suitable sdk manually, which is available [here](https://openjdk.java.net/)
-
-### Building and Running it locally
-
-You can build an executable jar-file by executing the following command:
-
-```sh
-./mvnw clean package
+```
+Net CO2 saving = S_cong + S_van - E_PT   [kg CO2/day]
 ```
 
-or on Windows:
+- `S_cong` congestion-relief saving: fewer vans on the road, so background traffic emits less
+- `S_van` van-removal saving: the CO2 of the van tours no longer driven
+- `E_PT` additional public-transport emissions: the laden bus burns more fuel
 
-```sh
-mvnw.cmd clean package
+Author: Francesco Regazzoni (TU Delft).
+
+## Authorship
+
+All code in this repository, the Python pipeline and the Java model classes, was written by
+the author. What the model relies on but does not author or include:
+
+- MATSim: the open-source agent-based transport framework the model runs on. The Java classes
+  plug into it; they are not part of MATSim itself.
+- Rotterdam scenario data (road network, synthetic population and plans, GTFS transit
+  schedule): provided by the XCARCITY project (Li et al., 2025).
+- HBEFA emission factors: an external emission-factor dataset.
+
+## Getting started
+
+What this repository holds is the code: the Python pipeline, the Java model classes, and the
+link and vehicle-id sets the scripts read. What it does not hold is the two heavy things a run
+needs, and neither of them is mine to publish:
+
+- **the scenario data** (~420 MB): the Rotterdam road network, the synthetic population and
+  plans, and the GTFS-derived transit schedule come from the XCARCITY project (Li et al.,
+  2025); the HBEFA emission-factor tables are an external dataset. They go under
+  `scenarios/ipft_rotterdam/` and `scenarios/ipft_toy/`, and are transferred separately.
+- **the MATSim JAR** (~220 MB), built from the MATSim example project (MATSim **2026.0**):
+
+  ```bash
+  export JAVA_HOME=<your JDK>
+  ./mvnw.cmd package -DskipTests      # -> matsim-example-project-0.0.1-SNAPSHOT.jar
+  ```
+
+Python side, from a clean environment (developed on Python 3.13):
+
+```bash
+pip install -r requirements.txt
 ```
 
-This will download all necessary dependencies (it might take a while the first time it is run) and create a file `matsim-example-project-0.0.1-SNAPSHOT.jar` in the top directory.
-This jar-file can be executed with Java on the command line. You need to pass a command to the jar file.
-To simply run MATSim based on a config file, pass `run --config <path>`. To get the GUI, pass `gui`. For more options, pass `help`.
+Every script is launched **from the project root**, not from inside `python_pipeline/`:
 
-```sh
-java -jar matsim-example-project-0.0.1-SNAPSHOT.jar <command>
+```bash
+python python_pipeline/<script>.py [flags]
 ```
 
+MATSim outputs are large and live outside the project tree. The root defaults to
+`D:/TesiOutputs`; set `IPFT_OUTPUT_ROOT` to put them anywhere else. A handful of one-off
+diagnostic scripts still carry that default as a literal — they are the `*_check.py` /
+`*_diag.py` family, and the drivers that matter take `--runs-dir` instead.
 
+### What runs immediately, with no data at all
 
-### Licenses
-(The following paragraphs need to be adjusted according to the specifications of your project.)
+These four need nothing but the repository and the Python dependencies, and they exercise the
+physics layer end to end — a good first check that the environment is right:
 
-The **MATSim program code** in this repository is distributed under the terms of the [GNU General Public License as published by the Free Software Foundation (version 2)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html). The MATSim program code are files that reside in the `src` directory hierarchy and typically end with `*.java`.
+```bash
+python python_pipeline/build_wltc_cycles.py        # rebuild the WLTC driving cycles
+python python_pipeline/validate_van_consumption.py # van model vs the official Ford WLTP figure
+python python_pipeline/feasibility.py              # feasibility envelope, alpha_max
+python python_pipeline/test_dwell_idle_guard.py    # guards on the measured-idle branch
+```
 
-The **MATSim input files, output files, analysis data and visualizations** are licensed under a <a rel="license" href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.
-<a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons License" style="border-width:0" src="https://i.creativecommons.org/l/by/4.0/80x15.png" /></a><br /> MATSim input files are those that are used as input to run MATSim. They often, but not always, have a header pointing to matsim.org. They typically reside in the `scenarios` directory hierarchy. MATSim output files, analysis data, and visualizations are files generated by MATSim runs, or by postprocessing.  They typically reside in a directory hierarchy starting with `output`.
+`RUNNING.md` is the campaign cheat-sheet: what launches what, in which order, how each step is
+verified, and what the failure mode of each step looks like.
 
-**Other data files**, in particular in `original-input-data`, have their own individual licenses that need to be individually clarified with the copyright holders.
+## Repository layout
 
+```
+python_pipeline/                     the emission + analysis pipeline (Python)
+  parameters.py                      central parameters and vehicle capacities
+  emission_formula.py                longitudinal-dynamics fuel/CO2 model
+  dynamic_mass.py                    weight-dependent van mass over a tour
+  sort_cycles.py / van_cycles.py     kinematic reconstruction (SORT bus, WLTC van)
+  build_wltc_cycles.py               driving-cycle preparation
+  parse_events.py                    MATSim event parsing (memory-lean)
+  term_a.py / term_b.py / term_c.py  the three balance terms (S_cong, S_van, E_PT)
+  corridor_metrics.py                corridor-restricted congestion indicators
+  run_pipeline.py                    end-to-end run for one scenario cell
+  sensitivity_surface.py             the sensitivity surface driver
+  feasibility.py                     feasibility envelope (alpha_max)
+  insert_vans.py                     inject the backup-van agents into a plans file
+  make_toy_longbase.py               warm-start equilibration (toy)
+  make_toy_warm_scenarios.py         warm scenario generation (toy)
+  make_toy_screening_scenarios.py    fixed-variable screening (toy)
+  make_rotterdam_warm_scenarios.py   warm scenario generation (Rotterdam)
+  make_dwell_schedules.py            per-alpha transit schedules: freight dwell
+                                     (minimumStopDuration) + isBlocking
+  make_bus_stop_links.py             the bus-stop link set for the Term A split
+  scenario_presets.py                toy vs Rotterdam configuration
+  scenario_runner.py                 batch MATSim runner
+  rotterdam_surface_robust.py        robust (paired-seed) surface post-processing
+  screening_analysis.py / screening_bus_capacity.py
+  validate_van_consumption.py        van fuel validation vs official WLTP
+  scong_toy_corridor_decomp.py       S_cong decomposition (volume vs speed)
+  test_dwell_idle_guard.py           guards on the measured-idle path
+  *_check.py / *_diag.py             validation and diagnostic scripts
 
+scenarios/ipft_rotterdam/            Rotterdam-specific setup and analysis (Python)
+  make_van_corridor.py               corridor = the links the vans actually drive on
+  extract_corridor_data.py           line-44 vehicles + (deprecated) bus-buffer corridor
+  derive_n_freight.py                daily parcel demand from the line-44 catchment
+  generate_pt_vehicles.py, make_*_config.py, check_*.py, plot_corridor_map.py, ...
+
+src/main/java/org/matsim/project/    MATSim model classes (Java)
+  MatsimModelImplementation.java     HBEFA + emission module wiring
+  Co2TotalsHandler.java              per-run CO2 aggregation event handler
+  RunMatsimModelImplementation.java  entry point
+```
+
+## Freight dwell inside MATSim
+
+The parcel handover at each stop is simulated rather than only accounted for afterwards.
+`make_dwell_schedules.py` writes, per load rate, a transit schedule in which the delivery
+stops of the freight route carry a `minimumStopDuration` (10 s per stop + 5 s per parcel)
+and the stop facilities are marked `isBlocking`, so a stopped bus holds the traffic lane.
+The baseline uses the same schedule with zero freight dwell, so the passenger stop — which
+happens in both worlds — cancels in the difference and only the extra freight seconds are
+measured.
+
+Two consequences for the accounting:
+
+- `parse_events.py` subtracts the standing time from the stop link's travel time, so the
+  per-link mean speed describes the driving part only. Left in, the kinematic
+  reconstruction would charge traction fuel for accelerations that never happened, while
+  the same seconds are already charged as idle in `E_PT`.
+- `term_c.py` can take the extra idle from the simulation (`use_measured_idle`) instead of
+  the a-priori convention. Where the timetable had slack the bus was standing anyway, so
+  the parcels add no standing time and no extra fuel; the a-priori figure is an upper bound.
+
+The congestion effect is reported on two disjoint link sets, never merged into one number:
+the van relief on the corridor minus the stop links, and the cost of buses held at stops on
+those stop links plus their upstream links (`make_bus_stop_links.py`).
+
+## Java
+
+The Java classes plug into the MATSim example project (MATSim 2026.0) and are not a
+standalone build; they are provided here to document the emission wiring used in the runs.

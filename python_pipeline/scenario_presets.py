@@ -28,6 +28,7 @@ Term A vs Term C vehicle filtering (split deliberately):
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,7 +42,9 @@ TOY_SCENARIO_DIR = _PROJECT_ROOT / "scenarios" / "ipft_toy"
 # Rotterdam batch needs ~25-40 GB) and keeping multi-GB event files out of the
 # OneDrive-synced tree avoids pointless cloud uploads. The toy runs were moved
 # to D:\TesiOutputs\ipft_toy_runs (verified copy of output/ipft_toy_runs).
-OUTPUT_ROOT = Path("D:/TesiOutputs")
+# Overridable without editing the code: set IPFT_OUTPUT_ROOT to run the pipeline
+# on a machine without a D: drive.
+OUTPUT_ROOT = Path(os.environ.get("IPFT_OUTPUT_ROOT", "D:/TesiOutputs"))
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,15 @@
 """Convergence curve for the Patrick deck, from the LONGBASE 80-iteration run."""
+import os
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
 
-RUN = Path(r"D:\TesiOutputs\ipft_rotterdam_longbase")
-OUT = Path(r"c:\Users\frare\OneDrive\Desktop\Tesi documents\Tesi Regazzoni\figures\convergence_curve.png")
+RUN = Path(os.environ.get("IPFT_OUTPUT_ROOT", "D:/TesiOutputs")) / "ipft_rotterdam_longbase"
+OUT = Path(os.environ.get(
+    "IPFT_FIGURES_DIR",
+    r"c:\Users\frare\OneDrive\Desktop\Tesi documents\Tesi Regazzoni\figures",
+)) / "convergence_curve.png"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
 df = pd.read_csv(RUN / "MRDH_10pct.ph_modestats.csv", sep=";")

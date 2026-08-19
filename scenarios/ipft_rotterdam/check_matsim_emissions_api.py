@@ -3,8 +3,13 @@ isWritingEmissionsEvents in EmissionsConfigGroup e relative stringhe."""
 import zipfile
 from pathlib import Path
 
-JAR = Path(r"c:\Users\frare\OneDrive\Desktop\Tesi documents\matsim-example-project-master"
-           r"\matsim-example-project-0.0.1-SNAPSHOT.jar")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The shaded JAR sits in the project root, or under target/ after `mvn package`.
+_JARS = (sorted(_PROJECT_ROOT.glob("matsim-example-project-*.jar"))
+         + sorted((_PROJECT_ROOT / "target").glob("matsim-example-project-*.jar")))
+if not _JARS:
+    raise SystemExit("no matsim-example-project-*.jar found; run `mvn package` first")
+JAR = _JARS[0]
 
 targets = {
     "org/matsim/contrib/emissions/HbefaVehicleCategory.class":
