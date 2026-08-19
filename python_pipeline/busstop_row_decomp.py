@@ -6,12 +6,12 @@ parcels but NOT for light, where it changes sign twice (-0.7, +4.1, +1.9, -3.8)
 with both seeds agreeing — so it is reproducible in the model, not seed noise,
 and unexplained.
 
-ROW 2 mixes two effects. Of its 18 links, 3 are also van-corridor links, where
+ROW 2 mixes two effects. Of its 14 links, 7 are also van-corridor links, where
 removing the vans RELIEVES congestion, while all 18 carry the bus that now
 blocks the lane. This script measures the two subsets separately:
 
-  shared   the 3 links that are both bus-stop and van-corridor  (van + bus)
-  busonly  the 15 links that only the bus touches               (bus alone)
+  shared   the 7 links that are both bus-stop and van-corridor  (van + bus)
+  busonly  the 7 links that only the bus touches                (bus alone)
 
 If busonly is monotone and shared is erratic, the van effect is contaminating
 the row and ROW 2 must be redefined as busonly. If busonly is erratic too, the
@@ -65,8 +65,8 @@ def main() -> None:
     root = Path(preset.base_config).parent.parent.parent
     corridor = load_corridor_links(root / preset.corridor_links_file)
     busstop = load_corridor_links(root / preset.bus_stop_links_file)
-    shared = frozenset(busstop & corridor)          # 3 links: van + bus
-    busonly = frozenset(busstop - corridor)         # 15 links: bus alone
+    shared = frozenset(busstop & corridor)          # 7 links: van + bus
+    busonly = frozenset(busstop - corridor)         # 7 links: bus alone
     print(f"link sets: busstop {len(busstop)} = shared {len(shared)} + busonly {len(busonly)}")
 
     link_lengths, _ = load_link_attributes(str(root / preset.network_file))

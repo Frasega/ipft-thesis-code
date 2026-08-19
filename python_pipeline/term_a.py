@@ -205,7 +205,7 @@ def compute_term_a(
 
     # Corridor-local Term A (only available from the Java CSV, and only when
     # corridor_links.txt was present at run time). Far better signal-to-noise
-    # than the region-wide delta: the treatment lives on the 163 links the vans
+    # than the region-wide delta: the treatment lives on the 105 links the vans
     # actually drive. (Was "~1,400" — that was the old bus-route-plus-250m
     # buffer, replaced 2026-07-28 because ~91% of it never carried a van.)
     def _bucket_delta(vehicle_class: str) -> float | None:
@@ -224,8 +224,8 @@ def compute_term_a(
     # co2_totals.csv was written with bus_stop_links.txt present (None before).
     #
     # NOT COMPARABLE TO term_a_corridor_kg: row 1 + row 2 spans corridor UNION
-    # bus-stop set (178 links), while term_a_corridor_kg is the corridor alone
-    # (163). The 15 extra links are the upstream ring where the queue behind a
+    # bus-stop set (112 links), while term_a_corridor_kg is the corridor alone
+    # (105). The 7 extra links are the upstream ring where the queue behind a
     # blocking bus forms — new road, deliberately added, not double counting.
     # So Term A(split) − term_a_corridor_kg is NOT the bus cost.
     term_a_vans = _bucket_delta("background_corridor_exstop")

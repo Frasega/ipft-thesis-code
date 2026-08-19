@@ -54,7 +54,7 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 	private double coldBackground, coldVan, coldTransit;
 
 	// Corridor-local background CO2: far better signal-to-noise for Term A than
-	// the region-wide sum (the van treatment lives on the 163 links the vans
+	// the region-wide sum (the van treatment lives on the 105 links the vans
 	// actually drive; "~1,400" was the old bus-route-plus-250m buffer,
 	// replaced 2026-07-28 because ~91% of it never carried a van).
 	// Loaded from corridor_links.txt next to the config (or its parent dir);
