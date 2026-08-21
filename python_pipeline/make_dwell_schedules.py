@@ -51,7 +51,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from dynamic_mass import compute_extra_dwell_time
-from parameters import ALPHA_VALUES, EXTRA_DWELL_PER_UNIT_S
+from parameters import (ALPHA_VALUES, EXTRA_DWELL_FIXED_OVERHEAD_S,
+                        EXTRA_DWELL_PER_UNIT_S)
 from scenario_presets import get_preset
 
 SCHEDULE_DOCTYPE = (
@@ -77,7 +78,7 @@ def _parse_hhmmss(value: str) -> int:
     return int(h) * 3600 + int(m) * 60 + int(s)
 
 
-def dwell_seconds(alpha: float, preset) -> int:
+def dwell_seconds(alpha: float, preset, per_unit_s: float = EXTRA_DWELL_PER_UNIT_S) -> int:
     """Package dwell per delivery stop [integer s] — same formula as Term C.
 
     The XML wants whole seconds (HH:MM:SS), so the float is rounded here
@@ -85,7 +86,7 @@ def dwell_seconds(alpha: float, preset) -> int:
     """
     units_per_stop = (alpha * preset.n_freight_units_real
                       / preset.bus_trips_per_day / preset.n_pickup_stops)
-    return int(round(compute_extra_dwell_time(units_per_stop, EXTRA_DWELL_PER_UNIT_S)))
+    return int(round(compute_extra_dwell_time(units_per_stop, per_unit_s)))
 
 
 # ── Schedule surgery ───────────────────────────────────────────────────────
@@ -143,7 +144,8 @@ def _hb_routes(line44: ET.Element, fac_link: dict[str, str],
 
 
 def build_schedule(base: Path, alpha: float, blocking: bool, out_path: Path,
-                   preset, hb_vehicle_ids: frozenset[str]) -> dict:
+                   preset, hb_vehicle_ids: frozenset[str],
+                   per_unit_s: float = EXTRA_DWELL_PER_UNIT_S) -> dict:
     """Write one modified schedule; return a report dict for verification."""
     tree = _load_schedule(base)
     root = tree.getroot()
@@ -152,7 +154,7 @@ def build_schedule(base: Path, alpha: float, blocking: bool, out_path: Path,
     routes = _hb_routes(line44, fac_link, hb_vehicle_ids,
                         preset.hub_stop_link)
 
-    dwell_s = dwell_seconds(alpha, preset)
+    dwell_s = dwell_seconds(alpha, preset, per_unit_s)
     n_stamped = 0
     hb_facilities: set[str] = set()
     # The dwell is stamped on the DELIVERY stops, identified by their link, not on
@@ -277,6 +279,13 @@ def main() -> None:
                     help="preset name: rotterdam (line 44) or rotterdam_L87")
     ap.add_argument("--vehicle-ids", default=None,
                     help="Default: the preset's one-to-many vehicle id file")
+    ap.add_argument("--per-unit-s", type=float, default=EXTRA_DWELL_PER_UNIT_S,
+                    help="Handling seconds per parcel (default: "
+                         "parameters.EXTRA_DWELL_PER_UNIT_S). This is the whole "
+                         "handling-time sensitivity: once the dwell is in the "
+                         "schedule the seconds are an INPUT, so a different value "
+                         "means new schedules and new runs. Write them somewhere "
+                         "else with --out-dir, or the existing ones are overwritten.")
     args = ap.parse_args()
 
     preset = get_preset(args.scenario)
@@ -299,13 +308,16 @@ def main() -> None:
     print(f"vehicle ids   : {ids_path.name} ({len(hb_ids)})")
     print(f"base schedule : {base}")
     print(f"variant       : isBlocking={args.blocking} ({tag})")
+    print(f"handling time : {EXTRA_DWELL_FIXED_OVERHEAD_S:.0f} s/stop + "
+          f"{args.per_unit_s:.0f} s/parcel")
     base_counts = _structure_counts(_load_schedule(base))
     print(f"base structure: {base_counts}")
 
     for alpha in args.alphas:
         astr = f"{int(round(alpha * 100)):03d}"
         out = out_dir / f"ptSchedule_dwell_alpha{astr}_{tag}.xml.gz"
-        report = build_schedule(base, alpha, blocking, out, preset, hb_ids)
+        report = build_schedule(base, alpha, blocking, out, preset, hb_ids,
+                                args.per_unit_s)
         verify_schedule(base_counts, report, preset)
         print(f"  alpha={astr}  dwell={report['dwell_s']:2d} s/stop  "
               f"stamped {report['n_stamped']:2d} stops on {report['n_routes']} routes, "
