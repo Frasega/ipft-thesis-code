@@ -30,9 +30,9 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
-DEFAULT_RUNS = "D:/TesiOutputs/ipft_rotterdam_runs"
+DEFAULT_RUNS = str(OUTPUT_ROOT / "ipft_rotterdam_runs")
 DEFAULT_OUT = "output/sensitivity_rotterdam"
 
 CONG = ["peak", "offpeak"]

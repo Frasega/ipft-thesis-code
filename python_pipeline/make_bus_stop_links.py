@@ -39,8 +39,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from make_dwell_schedules import (HUB_LINK, _facility_links, _find_line44,
-                                  _hb_routes, _load_schedule)
+from make_dwell_schedules import (_facility_links, _find_line, _hb_routes,
+                                  _load_schedule)
 from scenario_presets import get_preset
 
 
@@ -74,28 +74,48 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--hops", type=int, choices=[1, 2], default=1)
     ap.add_argument("--out", default=None,
-                    help="Default: scenarios/ipft_rotterdam/bus_stop_links.txt")
+                    help="Default: the preset's bus_stop_links_file")
+    ap.add_argument("--scenario", default="rotterdam",
+                    choices=["rotterdam", "rotterdam_L87"],
+                    help="Which line's stops become row 2. Everything below comes "
+                         "from the preset — line id, hub stop, vehicle ids, corridor "
+                         "and output path — so running it for the second line cannot "
+                         "touch line 44's files.")
     args = ap.parse_args()
 
-    preset = get_preset("rotterdam")
+    preset = get_preset(args.scenario)
     scen_dir = Path(preset.base_config).parent
     root_dir = scen_dir.parent.parent
 
-    # ── The 9 H->B stop links, from the schedule (same code path as the
-    #    dwell-schedule generator, so the two can never disagree) ───────────
-    tree = _load_schedule(scen_dir / "ptSchedule36Hour.xml.gz")
+    # ── The one-to-many stop links, read from the schedule through the same
+    #    code path as the dwell-schedule generator, so the two can never
+    #    disagree. Everything that identifies the line comes from the preset:
+    #    schedule file, transitLine id, hub stop and the exact vehicle ids.
+    tree = _load_schedule(root_dir / preset.base_transit_schedule)
     sroot = tree.getroot()
     fac_link = _facility_links(sroot)
-    hb_ids = frozenset((scen_dir / "line44_hb_vehicle_ids.txt").read_text().split())
-    routes = _hb_routes(_find_line44(sroot), fac_link, hb_ids)
+    hub_link = preset.hub_stop_link
+    hb_ids = frozenset(preset.term_c_bus_ids or ())
+    if not hub_link or not hb_ids or not preset.transit_line_id:
+        sys.exit(f"preset {preset.name!r} does not describe a line "
+                 f"(transit_line_id / hub_stop_link / term_c_bus_ids)")
+    routes = _hb_routes(_find_line(sroot, preset.transit_line_id),
+                        fac_link, hb_ids, hub_link)
     stop_links: list[str] = []
     for route in routes:
         for s in route.find("routeProfile").findall("stop"):
             lid = fac_link[s.get("refId")]
             if lid not in stop_links:
                 stop_links.append(lid)
-    assert len(stop_links) == 9, f"expected 9 H->B stop links, got {len(stop_links)}"
-    assert stop_links[0] == HUB_LINK
+    # The delivery segment is the preset's, not "every stop of the route": on a
+    # line that branches (87) only the common prefix can hold a locker, and the
+    # branch stops must not become row 2.
+    delivery = list(preset.pickup_link_ids or ())
+    missing = [l for l in delivery if l not in stop_links]
+    if missing or stop_links[0] != hub_link:
+        sys.exit(f"schedule and preset disagree: first stop {stop_links[0]} vs hub "
+                 f"{hub_link}, {len(missing)} delivery links not on the route {missing}")
+    stop_links = [hub_link] + delivery
 
     topo = load_network_topology(root_dir / preset.network_file)
     corridor = set((root_dir / preset.corridor_links_file)
@@ -103,7 +123,7 @@ def main() -> None:
 
     car_stops = [l for l in stop_links if "car" in topo[l][2]]
     platform_stops = [l for l in stop_links if "car" not in topo[l][2]]
-    print(f"H->B stop links      : {len(stop_links)}  "
+    print(f"hub + delivery stops : {len(stop_links)}  "
           f"(car-mode: {len(car_stops)}, bus-only platforms: {len(platform_stops)} "
           f"{platform_stops})")
 
@@ -118,7 +138,7 @@ def main() -> None:
     print(f"row 1 = corridor minus row 2 : {len(corridor - busstop_set)} links "
           f"(corridor {len(corridor)})")
 
-    out = Path(args.out) if args.out else scen_dir / "bus_stop_links.txt"
+    out = Path(args.out) if args.out else root_dir / preset.bus_stop_links_file
     out.write_text("\n".join(sorted(busstop_set)) + "\n", encoding="utf-8")
     print(f"wrote {out}")
 

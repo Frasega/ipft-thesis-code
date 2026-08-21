@@ -13,7 +13,9 @@ from pathlib import Path
 HERE = Path(__file__).parent
 WALK_BUFFER_M = 400.0
 SAMPLE_RATE = 0.10
-PARCELS_PER_PERSON_DAY = 0.125  # NL e-commerce: 0.10-0.15 pacchi/persona/giorno
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python_pipeline"))
+from parameters import PARCELS_PER_PERSON_DAY  # noqa: E402  (was copied here)
 
 # fermate H->B linea 99437 (da check_line44_stops.py)
 HB_STOP_IDS = [

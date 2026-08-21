@@ -40,7 +40,7 @@ from generate_configs import patch_config, _write_config_with_doctype
 from parameters import (RANDOM_SEEDS, WEIGHT_REGIMES, VAN_PARCELS_PER_TOUR_MAX,
                         N_FREIGHT_UNITS_TOY, c_van)
 from make_toy_warm_scenarios import frozen_plans, freeze_replanning, WARM_ITERS
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
 # ── Screening axes ──────────────────────────────────────────────────────────
 CONGESTION = "peak"                       # both axes are held at peak
@@ -49,8 +49,8 @@ SCREEN_WEIGHTS = ["light", "heavy"]       # the two weight extremes (axis A)
 SCREEN_N = [1000, 4000]                   # demand bracket x0.5 / x2 around the 2000 base
 SCREEN_ALPHAS = [0.5, 1.0]               # alpha points for axis B
 
-OUT_BASE = "D:/TesiOutputs/ipft_toy_screening_runs"
-SCREEN_PLANS_DIR = Path("D:/TesiOutputs/ipft_toy_screening_plans")
+OUT_BASE = str(OUTPUT_ROOT / "ipft_toy_screening_runs")
+SCREEN_PLANS_DIR = OUTPUT_ROOT / "ipft_toy_screening_plans"
 
 preset = get_preset("toy")
 GEN = Path(preset.generated_dir)

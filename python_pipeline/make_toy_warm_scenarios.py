@@ -26,13 +26,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from insert_vans import create_plans_file
 from generate_configs import patch_config, _write_config_with_doctype
 from parameters import ALPHA_VALUES, RANDOM_SEEDS, WEIGHT_REGIMES, c_van
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
 WARM_ITERS = 1                        # frozen routes -> just execute (no innovation)
-OUT_BASE = "D:/TesiOutputs/ipft_toy_warm_runs"
+OUT_BASE = str(OUTPUT_ROOT / "ipft_toy_warm_runs")
 # Warm plans = frozen plans (510 MB) + vans → big; write them GZIPPED on D:, NOT in the
 # OneDrive-synced generated/ dir (configs themselves are small and stay in generated/).
-WARM_PLANS_DIR = Path("D:/TesiOutputs/ipft_toy_warm_plans")
+WARM_PLANS_DIR = OUTPUT_ROOT / "ipft_toy_warm_plans"
 
 preset = get_preset("toy")
 GEN = Path(preset.generated_dir)

@@ -230,6 +230,15 @@ BUS_TRIPS_PER_DAY = 60
 #   end); Term C + feasibility use REAL units (transit schedule is not sampled).
 N_FREIGHT_UNITS_TOY = 2000
 
+# ── Demand derivation for a NEW corridor (derive_line.py) ─────────────────
+# The two assumptions that turn a bus line into a parcel demand. They lived in
+# derive_line.py AND derive_n_freight.py, so changing one left the other saying
+# something else — and those two scripts are how a second line gets its numbers.
+#   catchment  = residents within CATCHMENT_WALK_BUFFER_M of a stop of the line
+#   N_real/day = catchment x PARCELS_PER_PERSON_DAY
+CATCHMENT_WALK_BUFFER_M = 400.0     # walking distance to a stop
+PARCELS_PER_PERSON_DAY = 0.125      # NL e-commerce, range 0.10-0.15
+
 # Extra freight unloading dwell time (seconds per freight unit unloaded at a stop).
 # Source: TCQSM (TRB) door-hand-off boarding-time analogue, 1.75–4.5 s/passenger.
 # Cheng (2024 Sci. Rep.) and Ghilas (2018) leave it as a calibration parameter.

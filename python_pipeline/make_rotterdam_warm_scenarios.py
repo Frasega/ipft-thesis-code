@@ -62,7 +62,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from insert_vans import create_plans_file
 from generate_configs import patch_config, _write_config_with_doctype
 from parameters import ALPHA_VALUES, RANDOM_SEEDS, WEIGHT_REGIMES, c_van
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
 WARM_ITERS = 1
 preset = get_preset("rotterdam")
@@ -71,9 +71,12 @@ preset = get_preset("rotterdam")
 # 44's generated/ directory, where Co2TotalsHandler would resolve '../corridor_links.txt'
 # to line 44's link set and every bucket would be silently wrong. Bit us on 2026-08-20.
 GEN = Path(preset.generated_dir)
-# Warm plans = frozen seed (large) + vans -> write GZIPPED on D:, not in the synced tree.
-WARM_PLANS_DIR = Path("D:/TesiOutputs/ipft_rotterdam_warm_plans")
-WARM_PLANS_DIR.mkdir(parents=True, exist_ok=True)
+# Warm plans = frozen seed (large) + vans -> written GZIPPED next to the runs, not
+# in the synced tree. Default follows scenario_presets.OUTPUT_ROOT, so a machine
+# without a D: drive only has to set IPFT_OUTPUT_ROOT; --warm-plans-dir overrides
+# it per invocation (needed whenever a change makes the OLD plans wrong, because
+# a plans file is reused when it already exists).
+WARM_PLANS_DIR = OUTPUT_ROOT / "ipft_rotterdam_warm_plans"
 
 _SEED_DIRS = {
     "peak": "ipft_rotterdam_longbase",
@@ -96,7 +99,7 @@ def rotterdam_seed(congestion: str) -> str:
     Produced by:
         python python_pipeline/strip_selected_plans.py IN.xml.zst OUT_stripped.xml.gz
     """
-    d = Path("D:/TesiOutputs") / _SEED_DIRS[congestion]
+    d = OUTPUT_ROOT / _SEED_DIRS[congestion]
     for name in ("MRDH_10pct.output_plans_stripped.xml.gz",
                  "output_plans_stripped.xml.gz"):
         if (d / name).exists():
@@ -163,7 +166,19 @@ def main() -> None:
                          "directory or a surface.")
     ap.add_argument("--output-base-dir", default=None,
                     help="Default: preset dir, or "
-                         "D:/TesiOutputs/ipft_rotterdam_dwell_<tag>_runs with --dwell-tag")
+                         "<output root>/ipft_rotterdam_dwell_<tag>_runs with --dwell-tag")
+    ap.add_argument("--warm-plans-dir", default=None,
+                    help="Where the warm plans are written and REUSED FROM. A plans "
+                         "file that already exists is never regenerated, so after a "
+                         "change that alters the plans (van departure grid, locker "
+                         "set, N) point this at a fresh directory or the old plans "
+                         "come back silently. Default: <output root>/ipft_rotterdam_warm_plans.")
+    ap.add_argument("--config-tag", default="",
+                    help="Extra tag in the config file names and, unless "
+                         "--output-base-dir says otherwise, in the run directory. "
+                         "Without it a second campaign OVERWRITES the configs of the "
+                         "first, which is how a re-measurement quietly becomes a "
+                         "re-run of the old one. Example: --config-tag GRID.")
     args = ap.parse_args()
     global preset, GEN
     preset = get_preset(args.scenario)
@@ -178,11 +193,15 @@ def main() -> None:
     # The tag MUST be in the config name: blocking and bay write to different
     # output trees but would otherwise share config file names and overwrite
     # each other. "--filter RDWELL" still matches both variants.
-    cfg_prefix = (f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM") + sfx.replace("_", "")
+    cfg_prefix = ((f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM")
+                  + sfx.replace("_", "") + args.config_tag.upper())
+    warm_dir = Path(args.warm_plans_dir) if args.warm_plans_dir else WARM_PLANS_DIR
+    warm_dir.mkdir(parents=True, exist_ok=True)
     if args.output_base_dir:
         out_base = Path(args.output_base_dir)
     elif dwell_tag:
-        out_base = Path("D:/TesiOutputs") / f"ipft_rotterdam{sfx}_dwell_{dwell_tag}_runs"
+        out_base = (OUTPUT_ROOT
+                    / f"ipft_rotterdam{sfx}_dwell_{dwell_tag}{args.config_tag.lower()}_runs")
     else:
         out_base = Path(preset.output_base_dir)
     if dwell_tag:
@@ -199,7 +218,7 @@ def main() -> None:
             for alpha in (args.alphas if args.alphas else ALPHA_VALUES):
                 astr = f"{int(alpha * 100):03d}"
                 n_tours = math.ceil((1 - alpha) * N / cvan) if (1 - alpha) * N > 0 else 0
-                plans_path = str(WARM_PLANS_DIR /
+                plans_path = str(warm_dir /
                                  f"warmplans{sfx}_alpha{astr}_{congestion}_{weight_regime}.xml.gz")
                 if not Path(plans_path).exists():
                     create_plans_file(

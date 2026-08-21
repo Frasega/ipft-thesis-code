@@ -21,26 +21,39 @@ import statistics
 import sys
 from pathlib import Path
 
-SC = Path("scenarios/ipft_rotterdam")
-WALK_BUFFER_M = 400.0
-SAMPLE_RATE = 0.10
-PARCELS_PER_PERSON_DAY = 0.125
-DWELL_FIXED_S = 10.0
-DWELL_PER_UNIT_S = 5.0
-VAN_PAYLOAD_KG = 1100.0
-VAN_PARCELS_MAX = 150
-BUS_FREIGHT_CAPACITY_KG = 1000.0
-BUS_FREIGHT_NMAX = 70
-WEIGHTS = {"light": 3.0, "medium": 10.0, "heavy": 25.0}
-ALPHAS = [0.0, 0.25, 0.50, 0.75, 1.0]
+sys.path.insert(0, str(Path(__file__).parent))
 
+# Ogni costante viene da parameters.py e ogni percorso dal preset: prima erano
+# ricopiate qui, quindi cambiare parameters.py NON cambiava i numeri che questo
+# script stampa — ed e' lo script da cui si copiano i valori di una linea nuova.
+from parameters import (  # noqa: E402
+    ALPHA_VALUES as ALPHAS,
+    BUS_FREIGHT_CAPACITY_KG,
+    BUS_FREIGHT_NMAX_PARCELS as BUS_FREIGHT_NMAX,
+    EXTRA_DWELL_FIXED_OVERHEAD_S as DWELL_FIXED_S,
+    EXTRA_DWELL_PER_UNIT_S as DWELL_PER_UNIT_S,
+    WEIGHT_REGIMES as WEIGHTS,
+    c_van,
+)
+from scenario_presets import get_preset  # noqa: E402
 
-def c_van(w: float) -> int:
-    return min(VAN_PARCELS_MAX, int(VAN_PAYLOAD_KG // w))
+_PRESET = get_preset("rotterdam")
+SC = Path(_PRESET.base_config).parent
+SCHEDULE = Path(_PRESET.base_transit_schedule)
+NETWORK = Path(_PRESET.network_file)
+PLANS = Path(_PRESET.peak_base_plans)
+SAMPLE_RATE = _PRESET.sample_rate
+
+# Le due ipotesi della derivazione della domanda stanno in parameters.py come
+# tutto il resto: qui erano ricopiate.
+from parameters import (  # noqa: E402
+    CATCHMENT_WALK_BUFFER_M as WALK_BUFFER_M,
+    PARCELS_PER_PERSON_DAY,
+)
 
 
 def main(line_id: str, hub_link: str) -> None:
-    sched = gzip.open(SC / "ptSchedule36Hour.xml.gz", "rt", encoding="utf-8").read()
+    sched = gzip.open(SCHEDULE, "rt", encoding="utf-8").read()
 
     fac = {}
     for m in re.finditer(r'<stopFacility ([^>]+?)/?>', sched):
@@ -75,7 +88,7 @@ def main(line_id: str, hub_link: str) -> None:
     # rete: lunghezze, modes, to-node coords
     node = {}
     length, modes, tonode = {}, {}, {}
-    with gzip.open(SC / "networkWithRideAndBike.xml.gz", "rt", encoding="utf-8") as f:
+    with gzip.open(NETWORK, "rt", encoding="utf-8") as f:
         for line in f:
             if "<node " in line:
                 m = re.search(r'<node id="([^"]+)" x="([^"]+)" y="([^"]+)"', line)
@@ -121,7 +134,7 @@ def main(line_id: str, hub_link: str) -> None:
     # bacino
     coords = [(fac[s][2], fac[s][3]) for s in stops]
     n_tot = n_catch = 0
-    with gzip.open(SC / "planExternalProcessed_lowerCase.xml.gz", "rt", encoding="utf-8") as f:
+    with gzip.open(PLANS, "rt", encoding="utf-8") as f:
         inp = found = False
         for line in f:
             if "<person " in line:

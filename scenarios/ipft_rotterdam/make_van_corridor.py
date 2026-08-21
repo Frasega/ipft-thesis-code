@@ -16,6 +16,7 @@ USAGE:
     python make_van_corridor.py                      # default alpha=0 baselines on D:
     python make_van_corridor.py <events.zst> [...]   # explicit event files
 """
+import argparse
 import io
 import re
 import sys
@@ -24,15 +25,13 @@ from pathlib import Path
 import zstandard
 
 HERE = Path(__file__).parent
-OUT = HERE / "corridor_links.txt"
+sys.path.insert(0, str(HERE.parent.parent / "python_pipeline"))
+from scenario_presets import OUTPUT_ROOT, get_preset  # noqa: E402
 
-# Default: alpha=0 baselines (vans present). Heavy = most tours. Peak + off-peak +
-# both seeds to confirm the van route does not depend on congestion or seed.
-DEFAULT_RUNS = [
-    "D:/TesiOutputs/ipft_rotterdam_runs/alpha000_peak_heavy_seed4711",
-    "D:/TesiOutputs/ipft_rotterdam_runs/alpha000_offpeak_heavy_seed4711",
-    "D:/TesiOutputs/ipft_rotterdam_runs/alpha000_peak_heavy_seed9876",
-]
+# The output path and the default runs used to be literals: the file was always
+# written to line 44's corridor_links.txt, so pointing this script at a second
+# line's events OVERWROTE line 44's corridor without a word. Both now come from
+# the preset (--scenario), and --runs-dir picks the baselines to read.
 
 _RX_LV = re.compile(r'type="(?:entered link|left link)" .*?link="([^"]+)" vehicle="(backup_van_[^"]+)"')
 _RX_VL = re.compile(r'type="(?:entered link|left link)" .*?vehicle="(backup_van_[^"]+)" link="([^"]+)"')
@@ -56,10 +55,33 @@ def van_links_in(events_path: str) -> set[str]:
 
 
 def main(argv: list[str]) -> None:
-    if argv:
-        events = argv
-    else:
-        events = [f"{d}/MRDH_10pct.output_events.xml.zst" for d in DEFAULT_RUNS]
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("events", nargs="*",
+                    help="explicit alpha=0 events files; default: every alpha000_* "
+                         "run found in --runs-dir")
+    ap.add_argument("--scenario", default="rotterdam",
+                    choices=["rotterdam", "rotterdam_L87"],
+                    help="which line's corridor file is written (default: line 44)")
+    ap.add_argument("--runs-dir", default=None,
+                    help="run tree holding the alpha=0 baselines "
+                         "(default: <output root>/ipft_rotterdam<suffix>_runs)")
+    ap.add_argument("--out", default=None,
+                    help="default: the preset's corridor_links_file")
+    args = ap.parse_args(argv)
+
+    preset = get_preset(args.scenario)
+    root = HERE.parent.parent
+    out = Path(args.out) if args.out else root / preset.corridor_links_file
+
+    events = list(args.events)
+    if not events:
+        runs = Path(args.runs_dir) if args.runs_dir else (
+            OUTPUT_ROOT / f"ipft_rotterdam{preset.suffix}_runs")
+        events = sorted(str(f) for d in sorted(runs.glob("alpha000_*"))
+                        for f in d.glob("*output_events.xml.zst"))
+        if not events:
+            sys.exit(f"no alpha=0 events found under {runs} — pass them explicitly "
+                     f"or use --runs-dir")
 
     per_run = {}
     for ev in events:

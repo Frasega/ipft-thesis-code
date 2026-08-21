@@ -60,10 +60,10 @@ SCHEDULE_DOCTYPE = (
     '"http://www.matsim.org/files/dtd/transitSchedule_v2.dtd">\n'
 )
 
-# Fallbacks for line 44, kept so a preset without the new fields still works.
-# The preset is the authority: transit_line_id and hub_stop_link (2026-08-19).
-LINE_ID_FRAGMENT = "99437"     # RET bus 44
-HUB_LINK = "174131"            # Rotterdam Centraal perron BB — first H->B stop
+# Fallbacks for line 44, kept only so an OLD preset without the fields still
+# works. Since 2026-08-21 every preset carries transit_line_id / hub_stop_link /
+# base_transit_schedule, and the preset is the authority — do not add a third
+# line here, describe it in scenario_presets.
 
 
 def _fmt_hhmmss(seconds: int) -> str:
@@ -96,7 +96,7 @@ def _load_schedule(path: Path) -> ET.ElementTree:
         return ET.parse(f)
 
 
-def _find_line(root, line_id_fragment: str = LINE_ID_FRAGMENT) -> ET.Element:
+def _find_line(root, line_id_fragment: str) -> ET.Element:
     for line in root.iter("transitLine"):
         if line_id_fragment in (line.get("id") or ""):
             return line
@@ -113,7 +113,7 @@ def _facility_links(root) -> dict[str, str]:
 
 def _hb_routes(line44: ET.Element, fac_link: dict[str, str],
                hb_vehicle_ids: frozenset[str],
-               hub_link: str = HUB_LINK) -> list[ET.Element]:
+               hub_link: str) -> list[ET.Element]:
     """The H->B routes: first stop on the hub platform link. Cross-checked
     against the 98 known H->B vehicle ids — any mismatch aborts."""
     routes, hb_dep_total = [], 0
@@ -148,9 +148,9 @@ def build_schedule(base: Path, alpha: float, blocking: bool, out_path: Path,
     tree = _load_schedule(base)
     root = tree.getroot()
     fac_link = _facility_links(root)
-    line44 = _find_line(root, preset.transit_line_id or LINE_ID_FRAGMENT)
+    line44 = _find_line(root, preset.transit_line_id)
     routes = _hb_routes(line44, fac_link, hb_vehicle_ids,
-                        preset.hub_stop_link or HUB_LINK)
+                        preset.hub_stop_link)
 
     dwell_s = dwell_seconds(alpha, preset)
     n_stamped = 0
@@ -162,7 +162,7 @@ def build_schedule(base: Path, alpha: float, blocking: bool, out_path: Path,
     # bus stops, so the delivery segment is the common prefix and the branch is
     # outside it. Keying on pickup_link_ids makes that explicit and works for both.
     delivery_links = frozenset(preset.pickup_link_ids or ())
-    hub_link = preset.hub_stop_link or HUB_LINK
+    hub_link = preset.hub_stop_link
     for route in routes:
         stops = route.find("routeProfile").findall("stop")
         if delivery_links:
@@ -281,7 +281,7 @@ def main() -> None:
 
     preset = get_preset(args.scenario)
     scen_dir = Path(preset.base_config).parent
-    base = Path(args.schedule) if args.schedule else scen_dir / "ptSchedule36Hour.xml.gz"
+    base = Path(args.schedule) if args.schedule else Path(preset.base_transit_schedule)
     out_dir = (Path(args.out_dir) if args.out_dir
                else scen_dir / f"dwell_schedules{preset.suffix}")
     blocking = args.blocking == "true"
@@ -289,13 +289,13 @@ def main() -> None:
 
     if args.vehicle_ids:
         ids_path = Path(args.vehicle_ids)
-    elif preset.transit_line_id:
-        ids_path = scen_dir / f"line{preset.transit_line_id}_{preset.hub_stop_link}_vehicle_ids.txt"
+    elif preset.name == "rotterdam":
+        ids_path = scen_dir / "line44_hb_vehicle_ids.txt"   # historical name
     else:
-        ids_path = scen_dir / "line44_hb_vehicle_ids.txt"
+        ids_path = scen_dir / f"line{preset.transit_line_id}_{preset.hub_stop_link}_vehicle_ids.txt"
     hb_ids = frozenset(ids_path.read_text().split())
-    print(f"scenario      : {preset.name}  (line {preset.transit_line_id or LINE_ID_FRAGMENT}, "
-          f"hub {preset.hub_stop_link or HUB_LINK}, F={preset.bus_trips_per_day})")
+    print(f"scenario      : {preset.name}  (line {preset.transit_line_id}, "
+          f"hub {preset.hub_stop_link}, F={preset.bus_trips_per_day})")
     print(f"vehicle ids   : {ids_path.name} ({len(hb_ids)})")
     print(f"base schedule : {base}")
     print(f"variant       : isBlocking={args.blocking} ({tag})")

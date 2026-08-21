@@ -78,6 +78,10 @@ class ScenarioPreset:
     generated_dir: str
     output_base_dir: str
     network_file: str
+    base_transit_schedule: str             # the UNMODIFIED schedule every dwell
+                                           # variant is built from, and the one the
+                                           # line/route derivations read. It was a
+                                           # literal filename in four modules.
 
     # ── MATSim config patching ────────────────────────────────────────────
     flow_capacity_factor: float
@@ -172,6 +176,7 @@ TOY = ScenarioPreset(
     generated_dir="scenarios/ipft_toy/generated",
     output_base_dir=str(OUTPUT_ROOT / "ipft_toy_runs"),
     network_file="scenarios/ipft_toy/reduced_network.xml",
+    base_transit_schedule="scenarios/ipft_toy/reduced_transitSchedule_5min_headway.xml",
     flow_capacity_factor=1.0,
     storage_capacity_factor=1.0,
     emission_vehicles_file="../emission_vehicles.xml",
@@ -182,6 +187,11 @@ TOY = ScenarioPreset(
 def _rotterdam() -> ScenarioPreset:
     return ScenarioPreset(
         name="rotterdam",
+        # Line 44 described HERE and nowhere else: these two were module constants
+        # in make_dwell_schedules, so the second line had to inherit or override
+        # them by accident. Same values, now in the same place as line 87's.
+        transit_line_id="99437",                  # RET bus 44
+        hub_stop_link="174131",                   # Centraal perron BB, first H->B stop
         transit_prefixes=("veh_",),               # ALL transit vehicles (Term A exclusion)
         # ONLY the 98 H->B departures (Centraal->Zuidplein): the return direction
         # carries no freight, and its link sequence would put the load profile
@@ -244,6 +254,7 @@ def _rotterdam() -> ScenarioPreset:
         generated_dir="scenarios/ipft_rotterdam/generated",
         output_base_dir=str(OUTPUT_ROOT / "ipft_rotterdam_runs"),
         network_file="scenarios/ipft_rotterdam/networkWithRideAndBike.xml.gz",
+        base_transit_schedule="scenarios/ipft_rotterdam/ptSchedule36Hour.xml.gz",
         flow_capacity_factor=0.1,
         storage_capacity_factor=0.1,
         emission_vehicles_file="../emission_vehicles_rotterdam.xml",
@@ -350,6 +361,7 @@ def _rotterdam_l87() -> ScenarioPreset:
         generated_dir="scenarios/ipft_rotterdam/generated_L87",
         output_base_dir=str(OUTPUT_ROOT / "ipft_rotterdam_L87_runs"),
         network_file="scenarios/ipft_rotterdam/networkWithRideAndBike.xml.gz",
+        base_transit_schedule="scenarios/ipft_rotterdam/ptSchedule36Hour.xml.gz",
         flow_capacity_factor=0.1,
         storage_capacity_factor=0.1,
         emission_vehicles_file="../emission_vehicles_rotterdam.xml",

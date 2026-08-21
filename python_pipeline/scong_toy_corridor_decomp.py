@@ -36,12 +36,14 @@ from pathlib import Path
 PIPE = Path(__file__).resolve().parent
 sys.path.insert(0, str(PIPE))
 
+from scenario_presets import OUTPUT_ROOT
+
 import pandas as pd
 from term_a import parse_hbefa_events, filter_background_vehicles, _HBEFA_CACHE
 from parse_events import load_link_attributes
 from parameters import VAN_ID_PREFIX
 
-RUNS = Path(r"D:\TesiOutputs\ipft_toy_warm_runs")
+RUNS = OUTPUT_ROOT / "ipft_toy_warm_runs"
 OUT = PIPE.parent / "output" / "scong_toy_corridor_decomp.csv"
 
 net = PIPE.parent / "scenarios" / "ipft_toy" / "reduced_network.xml"
