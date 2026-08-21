@@ -94,8 +94,9 @@ def main(argv: list[str]) -> None:
     print(f"\nunion: {len(union)} links | intersection: {len(inter)} "
           f"({'STABLE' if len(union) == len(inter) else 'VARIES across runs — inspect'})")
 
-    OUT.write_text("\n".join(sorted(union, key=lambda x: (len(x), x))) + "\n", encoding="utf-8")
-    print(f"wrote {len(union)} links -> {OUT.name}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(sorted(union, key=lambda x: (len(x), x))) + "\n", encoding="utf-8")
+    print(f"wrote {len(union)} links -> {out}")
 
 
 if __name__ == "__main__":

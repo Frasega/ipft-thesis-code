@@ -156,6 +156,11 @@ def main() -> None:
                          "the road (policy sensitivity). Omit for the pre-dwell runs.")
     ap.add_argument("--dwell-schedules-dir", default=None,
                     help="Default: scenarios/ipft_rotterdam/dwell_schedules")
+    ap.add_argument("--weights", nargs="*", default=None,
+                    choices=list(WEIGHT_REGIMES),
+                    help="subset of the weight regimes (default: all three). A "
+                         "sensitivity that only needs one weight should say so: "
+                         "each weight costs its own warm-plans file per cell.")
     ap.add_argument("--alphas", nargs="*", type=float, default=None,
                     help="subset of ALPHA_VALUES (default: all five). Each alpha costs "
                          "one warm-plans file per weight and congestion level.")
@@ -213,7 +218,10 @@ def main() -> None:
     for congestion in levels:
         base = rotterdam_seed(congestion)
         print(f"[{congestion}] seed = {base}")
+        wanted = args.weights or list(WEIGHT_REGIMES)
         for weight_regime, weight_kg in WEIGHT_REGIMES.items():
+            if weight_regime not in wanted:
+                continue
             cvan = c_van(weight_kg)          # light 150, medium 110, heavy 44
             for alpha in (args.alphas if args.alphas else ALPHA_VALUES):
                 astr = f"{int(alpha * 100):03d}"

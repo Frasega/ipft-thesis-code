@@ -66,9 +66,12 @@ def main() -> None:
     preset = get_preset(args.scenario)
     root = Path(preset.base_config).parent.parent.parent
     scen = root / "scenarios" / "ipft_rotterdam"
-    out_dir = Path(args.out_dir) if args.out_dir else scen
+    # Next to the corridor it is built from, NOT always line 44's folder:
+    # the rings of a second line used to land on top of line 44's.
+    corridor_path = root / preset.corridor_links_file
+    out_dir = Path(args.out_dir) if args.out_dir else corridor_path.parent
 
-    corridor = {l for l in (scen / "corridor_links.txt").read_text().split() if l}
+    corridor = {l for l in corridor_path.read_text().split() if l}
     link_nodes, node_links = load_topology(root / preset.network_file)
     print(f"rete: {len(link_nodes):,} link | corridoio van: {len(corridor)}")
 
@@ -94,11 +97,19 @@ def main() -> None:
     # valle è sbagliata. Il valore atteso si aggiorna solo insieme al corridoio.
     #   164 -> corridoio 163 link (van sulla strada auto piu' veloce), fino al 2026-08-12
     #   137 -> corridoio 105 link (van instradato sui 7 locker), dal 2026-08-12
-    EXPECTED_RING1 = 137
+    # La guardia vale per la linea 44: un'altra linea ha un altro corridoio, e
+    # pretendere il numero della 44 sarebbe un falso allarme garantito. Per le
+    # altre linee il numero si stampa e basta, da annotare come riferimento.
+    EXPECTED_RING1 = 137 if preset.name == "rotterdam" else None
     r1 = len({l for l in (out_dir / "khop_ring1.txt").read_text().split() if l})
-    print(f"\n[verify] anello 1-hop = {r1} (atteso {EXPECTED_RING1} per il corridoio "
-          f"a {len(corridor)} link)"
-          f" -> {'OK' if r1 == EXPECTED_RING1 else 'DIVERSO, controllare la definizione di hop'}")
+    if EXPECTED_RING1 is None:
+        print(f"\n[verify] anello 1-hop = {r1} per il corridoio a "
+              f"{len(corridor)} link ({preset.name}: nessun valore atteso ancora, "
+              f"annotalo come riferimento)")
+    else:
+        esito = "OK" if r1 == EXPECTED_RING1 else "DIVERSO, controllare la definizione di hop"
+        print(f"\n[verify] anello 1-hop = {r1} (atteso {EXPECTED_RING1} per il "
+              f"corridoio a {len(corridor)} link) -> {esito}")
 
 
 if __name__ == "__main__":

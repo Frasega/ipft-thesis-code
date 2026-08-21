@@ -285,7 +285,8 @@ if __name__ == "__main__":
                    help="Path to MATSim JAR (auto-detected from target/ if omitted)")
     p.add_argument("--config", default=None,
                    help="Run a single config file instead of the full batch")
-    p.add_argument("--scenario", default=None, choices=["toy", "rotterdam"],
+    p.add_argument("--scenario", default=None,
+                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset — sets the default --config-dir")
     p.add_argument("--config-dir", default=None,
                    help="Directory containing generated config files "
