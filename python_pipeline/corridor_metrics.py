@@ -38,17 +38,35 @@ import pandas as pd
 
 def load_corridor_links(path: str | Path) -> frozenset[str]:
     p = Path(path)
+    # '#' lines are skipped so a generated list can carry a header documenting
+    # how it was produced (deadlock_links.txt does).
     return frozenset(line.strip() for line in p.read_text(encoding="utf-8").splitlines()
-                     if line.strip())
+                     if line.strip() and not line.lstrip().startswith("#"))
 
 
 def corridor_background_stats(
     vmean_df: pd.DataFrame,
     corridor_links: frozenset[str],
     link_lengths: dict | None = None,
+    exclude_links: frozenset[str] | None = None,
 ) -> dict:
     """
     Background-traffic congestion stats restricted to the corridor.
+
+    exclude_links removes links from the set before measuring. Its purpose is
+    the deadlock exclusion (make_deadlock_links.py): a handful of links in the
+    Zuidplein station area hold background vehicles for HOURS over a few tens of
+    metres, and because vehicle-hours are a time integral those links dominate
+    the totals — 54.5% of the corridor's background vehicle-hours come from
+    three of its 105 links. The exclusion list is derived from the LONGBASE
+    runs, which contain no freight and no vans, so it is fixed before and
+    independently of any scenario. Default None = no exclusion, i.e. the
+    historical behaviour.
+
+    Excluding is correct for the vehicle-hours rows and NOT needed for the kg
+    rows: under the `average` HBEFA lookup the emission factor is a step
+    function of speed, so a stuck link is charged the same per km in baseline
+    and scenario and cancels in the difference.
 
     Returns
     -------
@@ -57,13 +75,19 @@ def corridor_background_stats(
       'mean_speed_ms': float,        time-weighted mean background speed
       'n_traversals': int,           background link traversals on the corridor
       'vkm': float | None,           vehicle-km (needs link_lengths)
+      'n_links_excluded': int,       links dropped by exclude_links
     }
     """
+    if exclude_links:
+        n_excluded = len(corridor_links & frozenset(exclude_links))
+        corridor_links = frozenset(corridor_links) - frozenset(exclude_links)
+    else:
+        n_excluded = 0
     df = vmean_df[(vmean_df["vehicle_type"] == "background")
                   & (vmean_df["link_id"].isin(corridor_links))]
     if df.empty:
         return {"vehicle_hours": 0.0, "mean_speed_ms": None,
-                "n_traversals": 0, "vkm": None}
+                "n_traversals": 0, "vkm": None, "n_links_excluded": n_excluded}
 
     total_time_s = df["travel_time_s"].sum()
     # time-weighted mean speed = total distance / total time
@@ -76,6 +100,7 @@ def corridor_background_stats(
         "mean_speed_ms": (dist_m / total_time_s) if total_time_s > 0 else None,
         "n_traversals": int(len(df)),
         "vkm": dist_m / 1000.0,
+        "n_links_excluded": n_excluded,
     }
 
 

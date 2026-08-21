@@ -66,6 +66,10 @@ from scenario_presets import get_preset
 
 WARM_ITERS = 1
 preset = get_preset("rotterdam")
+# NOTE: this module-level value is the LINE-44 default. main() recomputes it from
+# the preset it actually selected — otherwise a second line's configs land in line
+# 44's generated/ directory, where Co2TotalsHandler would resolve '../corridor_links.txt'
+# to line 44's link set and every bucket would be silently wrong. Bit us on 2026-08-20.
 GEN = Path(preset.generated_dir)
 # Warm plans = frozen seed (large) + vans -> write GZIPPED on D:, not in the synced tree.
 WARM_PLANS_DIR = Path("D:/TesiOutputs/ipft_rotterdam_warm_plans")
@@ -149,23 +153,36 @@ def main() -> None:
                          "the road (policy sensitivity). Omit for the pre-dwell runs.")
     ap.add_argument("--dwell-schedules-dir", default=None,
                     help="Default: scenarios/ipft_rotterdam/dwell_schedules")
+    ap.add_argument("--alphas", nargs="*", type=float, default=None,
+                    help="subset of ALPHA_VALUES (default: all five). Each alpha costs "
+                         "one warm-plans file per weight and congestion level.")
+    ap.add_argument("--scenario", default="rotterdam",
+                    help="preset name: rotterdam (line 44) or rotterdam_L87. The "
+                         "preset's line_tag goes into every generated name, so two "
+                         "lines never share a warm-plans file, a config, a run "
+                         "directory or a surface.")
     ap.add_argument("--output-base-dir", default=None,
                     help="Default: preset dir, or "
                          "D:/TesiOutputs/ipft_rotterdam_dwell_<tag>_runs with --dwell-tag")
     args = ap.parse_args()
+    global preset, GEN
+    preset = get_preset(args.scenario)
+    GEN = Path(preset.generated_dir)
+    GEN.mkdir(parents=True, exist_ok=True)
+    sfx = preset.suffix
     levels = ["peak", "offpeak"] if args.congestion == "both" else [args.congestion]
 
     dwell_tag = args.dwell_tag
     sched_dir = (Path(args.dwell_schedules_dir) if args.dwell_schedules_dir
-                 else Path(preset.base_config).parent / "dwell_schedules")
+                 else Path(preset.base_config).parent / f"dwell_schedules{sfx}")
     # The tag MUST be in the config name: blocking and bay write to different
     # output trees but would otherwise share config file names and overwrite
     # each other. "--filter RDWELL" still matches both variants.
-    cfg_prefix = f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM"
+    cfg_prefix = (f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM") + sfx.replace("_", "")
     if args.output_base_dir:
         out_base = Path(args.output_base_dir)
     elif dwell_tag:
-        out_base = Path("D:/TesiOutputs") / f"ipft_rotterdam_dwell_{dwell_tag}_runs"
+        out_base = Path("D:/TesiOutputs") / f"ipft_rotterdam{sfx}_dwell_{dwell_tag}_runs"
     else:
         out_base = Path(preset.output_base_dir)
     if dwell_tag:
@@ -179,11 +196,11 @@ def main() -> None:
         print(f"[{congestion}] seed = {base}")
         for weight_regime, weight_kg in WEIGHT_REGIMES.items():
             cvan = c_van(weight_kg)          # light 150, medium 110, heavy 44
-            for alpha in ALPHA_VALUES:
+            for alpha in (args.alphas if args.alphas else ALPHA_VALUES):
                 astr = f"{int(alpha * 100):03d}"
                 n_tours = math.ceil((1 - alpha) * N / cvan) if (1 - alpha) * N > 0 else 0
                 plans_path = str(WARM_PLANS_DIR /
-                                 f"warmplans_alpha{astr}_{congestion}_{weight_regime}.xml.gz")
+                                 f"warmplans{sfx}_alpha{astr}_{congestion}_{weight_regime}.xml.gz")
                 if not Path(plans_path).exists():
                     create_plans_file(
                         base_plans_path=base, output_path=plans_path, alpha=alpha,
@@ -194,6 +211,12 @@ def main() -> None:
                         van_mode=preset.van_mode, spread_minutes=preset.van_spread_minutes,
                         n_vans_override=n_tours,
                         locker_stops=preset.van_locker_stops,
+                        # The departure grid is the BASELINE's: a van that
+                        # survives keeps the exact time it had at alpha=0, so
+                        # baseline - scenario is the missing tours and not the
+                        # same tours moved elsewhere in the peak. At alpha=0
+                        # grid == n_tours, so the baselines are unchanged.
+                        n_slots=math.ceil(N / cvan),
                     )
                 sched = (dwell_schedule_for(alpha, dwell_tag, sched_dir)
                          if dwell_tag else None)
@@ -214,8 +237,8 @@ def main() -> None:
                 dwell_note = (f" dwell={Path(sched).name}" if sched else "")
                 print(f"  alpha={astr} {congestion:7s} {weight_regime:6s} "
                       f"(C_van={cvan}) -> {n_tours} van-tours{dwell_note}")
-    surface_out = (f"output/sensitivity_rotterdam_dwell_{dwell_tag}" if dwell_tag
-                   else "output/sensitivity_rotterdam")
+    surface_out = (f"output/sensitivity_rotterdam{sfx}_dwell_{dwell_tag}" if dwell_tag
+                   else f"output/sensitivity_rotterdam{sfx}")
     dwell_flag = " --dwell-in-matsim" if dwell_tag else ""
     print(f"\nGenerated {len(runs)} Rotterdam warm configs (config_{cfg_prefix}_*). Run with:\n"
           f"  scenario_runner.py --scenario rotterdam --filter {cfg_prefix} --heap <fit> "

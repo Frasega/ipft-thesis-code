@@ -60,6 +60,8 @@ SCHEDULE_DOCTYPE = (
     '"http://www.matsim.org/files/dtd/transitSchedule_v2.dtd">\n'
 )
 
+# Fallbacks for line 44, kept so a preset without the new fields still works.
+# The preset is the authority: transit_line_id and hub_stop_link (2026-08-19).
 LINE_ID_FRAGMENT = "99437"     # RET bus 44
 HUB_LINK = "174131"            # Rotterdam Centraal perron BB — first H->B stop
 
@@ -94,11 +96,15 @@ def _load_schedule(path: Path) -> ET.ElementTree:
         return ET.parse(f)
 
 
-def _find_line44(root) -> ET.Element:
+def _find_line(root, line_id_fragment: str = LINE_ID_FRAGMENT) -> ET.Element:
     for line in root.iter("transitLine"):
-        if LINE_ID_FRAGMENT in (line.get("id") or ""):
+        if line_id_fragment in (line.get("id") or ""):
             return line
-    raise RuntimeError(f"transitLine containing '{LINE_ID_FRAGMENT}' not found")
+    raise RuntimeError(f"transitLine containing '{line_id_fragment}' not found")
+
+
+# Historical name, kept so existing imports do not break.
+_find_line44 = _find_line
 
 
 def _facility_links(root) -> dict[str, str]:
@@ -106,7 +112,8 @@ def _facility_links(root) -> dict[str, str]:
 
 
 def _hb_routes(line44: ET.Element, fac_link: dict[str, str],
-               hb_vehicle_ids: frozenset[str]) -> list[ET.Element]:
+               hb_vehicle_ids: frozenset[str],
+               hub_link: str = HUB_LINK) -> list[ET.Element]:
     """The H->B routes: first stop on the hub platform link. Cross-checked
     against the 98 known H->B vehicle ids — any mismatch aborts."""
     routes, hb_dep_total = [], 0
@@ -115,12 +122,12 @@ def _hb_routes(line44: ET.Element, fac_link: dict[str, str],
         first_link = fac_link.get(stops[0].get("refId"))
         deps = [d.get("vehicleRefId")
                 for d in route.find("departures").findall("departure")]
-        if first_link == HUB_LINK:
+        if first_link == hub_link:
             unknown = [v for v in deps if v not in hb_vehicle_ids]
             if unknown:
                 raise RuntimeError(
                     f"route {route.get('id')}: {len(unknown)} departures not in "
-                    f"line44_hb_vehicle_ids.txt — H->B identification is wrong")
+                    f"the one-to-many vehicle id list — direction identification is wrong")
             routes.append(route)
             hb_dep_total += len(deps)
         else:
@@ -141,20 +148,42 @@ def build_schedule(base: Path, alpha: float, blocking: bool, out_path: Path,
     tree = _load_schedule(base)
     root = tree.getroot()
     fac_link = _facility_links(root)
-    line44 = _find_line44(root)
-    routes = _hb_routes(line44, fac_link, hb_vehicle_ids)
+    line44 = _find_line(root, preset.transit_line_id or LINE_ID_FRAGMENT)
+    routes = _hb_routes(line44, fac_link, hb_vehicle_ids,
+                        preset.hub_stop_link or HUB_LINK)
 
     dwell_s = dwell_seconds(alpha, preset)
     n_stamped = 0
     hb_facilities: set[str] = set()
+    # The dwell is stamped on the DELIVERY stops, identified by their link, not on
+    # "every stop except the first". The two coincide on line 44, where all 8 stops
+    # after the hub are delivery stops. They do not on line 87, whose 63 departures
+    # split into two branches after the 17th stop: a locker can only sit where every
+    # bus stops, so the delivery segment is the common prefix and the branch is
+    # outside it. Keying on pickup_link_ids makes that explicit and works for both.
+    delivery_links = frozenset(preset.pickup_link_ids or ())
+    hub_link = preset.hub_stop_link or HUB_LINK
     for route in routes:
         stops = route.find("routeProfile").findall("stop")
-        expected_delivery = preset.n_pickup_stops           # 8 = 9 minus the hub
-        if len(stops) - 1 != expected_delivery:
-            raise RuntimeError(f"route {route.get('id')}: {len(stops)} stops, "
-                               f"expected {expected_delivery + 1}")
-        hb_facilities.update(s.get("refId") for s in stops)
-        for stop in stops[1:]:                              # skip the hub
+        if delivery_links:
+            targets = [s for s in stops
+                       if fac_link.get(s.get("refId")) in delivery_links]
+            if len(targets) != preset.n_pickup_stops:
+                raise RuntimeError(
+                    f"route {route.get('id')}: {len(targets)} of its {len(stops)} "
+                    f"stops are on a delivery link, expected {preset.n_pickup_stops}")
+        else:
+            if len(stops) - 1 != preset.n_pickup_stops:
+                raise RuntimeError(f"route {route.get('id')}: {len(stops)} stops, "
+                                   f"expected {preset.n_pickup_stops + 1}")
+            targets = stops[1:]
+        # isBlocking goes on the delivery segment only: the hub plus the stops that
+        # actually receive freight. Stops beyond it get no extra dwell, so flagging
+        # them would change baseline and scenario identically and measure nothing.
+        hb_facilities.update(s.get("refId") for s in targets)
+        hb_facilities.update(s.get("refId") for s in stops
+                             if fac_link.get(s.get("refId")) == hub_link)
+        for stop in targets:
             if dwell_s > 0:
                 stop.set("minimumStopDuration", _fmt_hhmmss(dwell_s))
                 n_stamped += 1
@@ -243,18 +272,31 @@ def main() -> None:
     ap.add_argument("--schedule", default=None,
                     help="Base schedule (default: the one in the Rotterdam config)")
     ap.add_argument("--out-dir", default=None,
-                    help="Default: scenarios/ipft_rotterdam/dwell_schedules")
+                    help="Default: scenarios/ipft_rotterdam/dwell_schedules<suffix>")
+    ap.add_argument("--scenario", default="rotterdam",
+                    help="preset name: rotterdam (line 44) or rotterdam_L87")
+    ap.add_argument("--vehicle-ids", default=None,
+                    help="Default: the preset's one-to-many vehicle id file")
     args = ap.parse_args()
 
-    preset = get_preset("rotterdam")
+    preset = get_preset(args.scenario)
     scen_dir = Path(preset.base_config).parent
     base = Path(args.schedule) if args.schedule else scen_dir / "ptSchedule36Hour.xml.gz"
-    out_dir = Path(args.out_dir) if args.out_dir else scen_dir / "dwell_schedules"
+    out_dir = (Path(args.out_dir) if args.out_dir
+               else scen_dir / f"dwell_schedules{preset.suffix}")
     blocking = args.blocking == "true"
     tag = "blocking" if blocking else "bay"
 
-    hb_ids = frozenset((scen_dir / "line44_hb_vehicle_ids.txt")
-                       .read_text().split())
+    if args.vehicle_ids:
+        ids_path = Path(args.vehicle_ids)
+    elif preset.transit_line_id:
+        ids_path = scen_dir / f"line{preset.transit_line_id}_{preset.hub_stop_link}_vehicle_ids.txt"
+    else:
+        ids_path = scen_dir / "line44_hb_vehicle_ids.txt"
+    hb_ids = frozenset(ids_path.read_text().split())
+    print(f"scenario      : {preset.name}  (line {preset.transit_line_id or LINE_ID_FRAGMENT}, "
+          f"hub {preset.hub_stop_link or HUB_LINK}, F={preset.bus_trips_per_day})")
+    print(f"vehicle ids   : {ids_path.name} ({len(hb_ids)})")
     print(f"base schedule : {base}")
     print(f"variant       : isBlocking={args.blocking} ({tag})")
     base_counts = _structure_counts(_load_schedule(base))

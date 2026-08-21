@@ -2,7 +2,11 @@
 Insert backup van agents into a MATSim plans.xml / plans.xml.gz file.
 
 For a given alpha (load success rate) and N total freight units:
-  n_backup_vans = round((1 - alpha) * N_freight)
+  n_backup_vans = round((1 - alpha) * N_freight)          # one van per parcel
+but every campaign in the thesis passes n_vans_override with the CONSOLIDATED
+tour count instead, n_backup_vans = ceil((1 - alpha) * N_freight / C_van(w)),
+together with n_slots = the alpha=0 tour count so the departure grid is the
+baseline's (see insert_vans).
 
 Each van agent:
   - subpopulation = 'freight'  (ChangeExpBeta only; no mode choice / re-routing)
@@ -153,6 +157,7 @@ def insert_vans(
     van_mode: str = "freight",
     spread_minutes: float = 0.0,
     locker_stops: tuple[tuple[str, float, float], ...] = (),
+    n_slots: int | None = None,
     verbose: bool = True,
 ) -> None:
     """
@@ -162,16 +167,32 @@ def insert_vans(
 
     spread_minutes > 0 distributes van departures evenly over
     [departure_time, departure_time + spread_minutes].
+
+    n_slots — the DEPARTURE GRID, and the reason it exists (2026-08-21):
+    without it the grid was spaced by n_vans, so the baseline (11 tours, one
+    every 12 min) and a scenario (5 tours, one every 30 min) sent their vans at
+    DIFFERENT times. Subtracting the two then mixed "fewer vans" with "vans
+    moved to another part of the peak", and the congestion delta carried both.
+    Pass the BASELINE tour count: every scenario then keeps the baseline's own
+    slots and simply stops early, so a van that survives departs at exactly the
+    time it departed in the baseline and the delta is only the missing tours.
+    The vans dropped are the LAST ones (the latest departures) — the convention
+    agreed in the plan; the alternative, thinning the grid evenly, would spread
+    the relief over the window instead of concentrating it at the end.
+    n_slots=None keeps the historical behaviour, and n_slots == n_vans (the
+    alpha=0 baseline) reproduces it exactly, so BASELINE RUNS ARE UNCHANGED.
     """
     with _open_text(base_plans_path, "r") as f:
         content = f.read()
 
     base_s = _hms_to_s(departure_time)
 
+    grid = n_slots if n_slots else n_vans
+
     def _dep(i: int) -> str:
-        if spread_minutes <= 0 or n_vans <= 1:
+        if spread_minutes <= 0 or grid <= 1:
             return departure_time
-        return _s_to_hms(base_s + i * (spread_minutes * 60.0) / (n_vans - 1))
+        return _s_to_hms(base_s + i * (spread_minutes * 60.0) / (grid - 1))
 
     van_blocks = "".join(
         _build_van_xml(
@@ -195,7 +216,8 @@ def insert_vans(
         f.write(new_content)
 
     if verbose:
-        spread_note = f" spread over {spread_minutes:.0f} min" if spread_minutes > 0 else ""
+        spread_note = (f" spread over {spread_minutes:.0f} min on a {grid}-slot grid"
+                       if spread_minutes > 0 else "")
         print(f"[insert_vans] Added {n_vans} vans (mode={van_mode}) -> {output_path}")
         print(f"  departure: {departure_time}{spread_note}  hub: {hub_link}  terminal: {terminal_link}")
         if locker_stops:
@@ -222,6 +244,7 @@ def create_plans_file(
     spread_minutes: float = 0.0,
     n_vans_override: int | None = None,
     locker_stops: tuple[tuple[str, float, float], ...] = (),
+    n_slots: int | None = None,
 ) -> int:
     """
     Create one plans file for a given (alpha, congestion) combination.
@@ -230,6 +253,9 @@ def create_plans_file(
     n_vans_override to insert the CONSOLIDATED tour count instead
     (⌈(1-alpha)*N / C_van(w)⌉), so the simulated congestion (Term A) and the van
     speeds (Term B) reflect the real number of van vehicles, not one-per-parcel.
+
+    n_slots is the departure grid — pass the alpha=0 tour count so every
+    scenario reuses the baseline's departure times (see insert_vans).
 
     Returns the number of vans inserted.
     """
@@ -245,6 +271,7 @@ def create_plans_file(
         van_mode=van_mode,
         spread_minutes=spread_minutes,
         locker_stops=locker_stops,
+        n_slots=n_slots,
         verbose=verbose,
     )
     return n_vans

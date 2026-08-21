@@ -59,6 +59,8 @@ from parameters import (
     VAN_PAYLOAD_CAPACITY_KG,
     VAN_PARCELS_PER_TOUR_MAX,
     VAN_STOP_IDLE_S,
+    VAN_STOP_IDLE_LOW_S,
+    VAN_STOP_IDLE_HIGH_S,
     VAN_LOAD_FACTOR,
 )
 
@@ -408,9 +410,14 @@ def _parse_args() -> argparse.Namespace:
                         "If omitted, baseline is used as proxy.")
     p.add_argument("--network", required=True,
                    help="Path to the network XML (plain or .gz)")
-    p.add_argument("--scenario", default="toy", choices=["toy", "rotterdam"],
+    p.add_argument("--scenario", default="toy",
+                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset: sets transit filters, F, sample rate, "
-                        "pickup stops and the n-freight default (default: toy)")
+                        "pickup stops and the n-freight default (default: toy). "
+                        "rotterdam = line 44, rotterdam_L87 = the second corridor. "
+                        "Getting this wrong is silent: line 44 runs in EVERY "
+                        "Rotterdam simulation, so an L87 run analysed as "
+                        "'rotterdam' returns line-44 numbers.")
     p.add_argument("--alpha", type=float, default=0.5,
                    help="Load success rate alpha [0, 1] (default: 0.5)")
     p.add_argument("--weight", default="medium", choices=list(WEIGHT_REGIMES.keys()),
@@ -423,6 +430,35 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--bus-id", default=None,
                    help="Bus vehicle ID to use for Term C (default: median-link-count "
                         "bus among the H→B candidates)")
+    # ── Layer-3 sensitivity knobs — LINE 44 ONLY ─────────────────────────
+    # They live here because rotterdam_surface_robust.py runs every cell as a
+    # SUBPROCESS and can reach run_scenario only through this CLI; without them
+    # it passed four options argparse rejected and every cell was skipped.
+    # Default None = not asked for, so the headline path is untouched, and the
+    # gate in scenario_presets.check_sensitivity_allowed refuses them on any
+    # scenario other than line 44 unless --force-sensitivity is given.
+    p.add_argument("--van-stop-idle", choices=["low", "high", "zero"], default=None,
+                   help="Van delivery-stop idle bracket: low = engine off + restart "
+                        "~10 s/stop (headline), high = idle through the ~100 s service "
+                        "time, zero = omitted (old design). Default: parameters.VAN_STOP_IDLE_S.")
+    p.add_argument("--van-load", choices=["mean", "full"], default=None,
+                   help="Van tour evaluation mass: mean = tare + payload/2 (headline, "
+                        "exact for a stepwise-declining load), full = tare + payload "
+                        "(historical departure mass, overstates S_van 4-10%%). "
+                        "Default: parameters.VAN_LOAD_FACTOR.")
+    p.add_argument("--recon-seed", type=int, default=None,
+                   help="RNG seed of the micro-trip kinematic reconstruction — rerun "
+                        "with another seed to show the terms and the cell ranking do "
+                        "not depend on the draw. Default: 42.")
+    p.add_argument("--extra-dwell-s", type=float, default=None,
+                   help="Per-parcel freight-handling dwell seconds (TCQSM range 3-15 s). "
+                        "Rejected together with --dwell-in-matsim, where the seconds are "
+                        "an input to the schedule and this would change nothing.")
+    p.add_argument("--force-sensitivity", action="store_true",
+                   help="Apply the four knobs above on a scenario other than line 44. "
+                        "Their brackets were built on the line-44 corridor and validated "
+                        "nowhere else, so results obtained this way must be reported as "
+                        "unvalidated.")
     p.add_argument("--dwell-in-matsim", action="store_true",
                    help="The runs simulate the freight dwell in the schedule "
                         "(make_dwell_schedules.py): Term C idle uses the MEASURED "
@@ -438,8 +474,28 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
 
-    from scenario_presets import get_preset
+    from scenario_presets import check_sensitivity_allowed, get_preset
     preset = get_preset(args.scenario)
+
+    # Only the knobs actually given count as "requested": the headline run
+    # passes none of them and never touches the gate.
+    requested = {name: value for name, value in
+                 (("van_stop_idle", args.van_stop_idle),
+                  ("van_load", args.van_load),
+                  ("recon_seed", args.recon_seed),
+                  ("extra_dwell_s", args.extra_dwell_s))
+                 if value is not None}
+    try:
+        check_sensitivity_allowed(preset.name, requested, args.force_sensitivity)
+    except ValueError as exc:
+        sys.exit(f"run_pipeline.py: error: {exc}")
+
+    van_stop_idle_s = ({"low": VAN_STOP_IDLE_LOW_S, "high": VAN_STOP_IDLE_HIGH_S,
+                        "zero": 0.0}[args.van_stop_idle]
+                       if args.van_stop_idle is not None else VAN_STOP_IDLE_S)
+    van_load_factor = ({"mean": 0.5, "full": 1.0}[args.van_load]
+                       if args.van_load is not None else None)
+
     n_freight = args.n_freight if args.n_freight is not None else preset.n_freight_units_sim
     n_pickup = args.n_pickup_stops if args.n_pickup_stops is not None else preset.n_pickup_stops
 
@@ -468,6 +524,10 @@ def main() -> None:
         corridor_links_file=preset.corridor_links_file,
         bus_stop_links_file=preset.bus_stop_links_file,
         dwell_in_matsim=args.dwell_in_matsim,
+        van_stop_idle_s=van_stop_idle_s,
+        van_load_factor=van_load_factor,
+        recon_seed=args.recon_seed if args.recon_seed is not None else 42,
+        extra_dwell_per_unit_s=args.extra_dwell_s,
     )
 
     if args.output:

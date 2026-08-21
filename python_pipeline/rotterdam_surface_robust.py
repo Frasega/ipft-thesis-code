@@ -32,9 +32,6 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent))
 from scenario_presets import get_preset
 
-preset = get_preset("rotterdam")
-NET = preset.network_file
-
 DEFAULT_RUNS = "D:/TesiOutputs/ipft_rotterdam_runs"
 DEFAULT_OUT = "output/sensitivity_rotterdam"
 
@@ -68,9 +65,20 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--runs-dir", default=DEFAULT_RUNS)
     ap.add_argument("--out", default=DEFAULT_OUT)
-    # Layer-3 knobs, passed straight through to each cell's subprocess. Use a
-    # different --out per sweep: the driver RESUMES from results_long.csv, so
-    # reusing one directory would skip every cell and reproduce the base sweep.
+    # Which corridor these runs belong to. It was hardcoded to line 44, and that
+    # is silent when wrong: line 44 runs in EVERY Rotterdam simulation, so L87
+    # runs analysed as 'rotterdam' come back with line-44 trips, stops, parcels
+    # and bus ids, and nothing complains.
+    ap.add_argument("--scenario", default="rotterdam",
+                    choices=["rotterdam", "rotterdam_L87"],
+                    help="rotterdam = line 44 (default), rotterdam_L87 = the "
+                         "second corridor. Must match the runs in --runs-dir.")
+    # Layer-3 knobs, passed straight through to each cell's subprocess, which
+    # accepts them only on the line-44 scenario (the gate lives in
+    # scenario_presets.check_sensitivity_allowed; this driver is line 44 by
+    # construction, so it always passes). Use a different --out per sweep: the
+    # driver RESUMES from results_long.csv, so reusing one directory would skip
+    # every cell and silently reproduce the base sweep.
     ap.add_argument("--alphas", type=float, nargs="*", default=None,
                     help="Only these alpha values (e.g. --alphas 0.5 1.0). Default: all.")
     ap.add_argument("--van-stop-idle", choices=["low", "high", "zero"], default=None)
@@ -82,6 +90,8 @@ def main() -> None:
                          "idle uses the measured extra standing (scenario - baseline).")
     args = ap.parse_args()
 
+    preset = get_preset(args.scenario)
+    NET = preset.network_file
     RUNS = args.runs_dir
     OUT = Path(args.out)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -117,7 +127,8 @@ def main() -> None:
                         print(f"[skip] no scenario alpha{a} {c}/{w}/seed{s}", flush=True)
                         continue
                     tmp = str(OUT / f"_tmp_{c}_{w}_{s}_{a}.json")
-                    cmd = ["python", "python_pipeline/run_pipeline.py", "--scenario", "rotterdam",
+                    cmd = ["python", "python_pipeline/run_pipeline.py",
+                           "--scenario", args.scenario,
                            "--baseline", base, "--scenario-events", scen, "--network", NET,
                            "--alpha", str(af), "--weight", w, "--output", tmp]
                     if args.dwell_in_matsim:

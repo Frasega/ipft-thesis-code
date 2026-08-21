@@ -332,7 +332,8 @@ def _plot_surface(grouped: pd.DataFrame, out_dir: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Assemble the 30-scenario sensitivity surface")
-    p.add_argument("--scenario", default="toy", choices=["toy", "rotterdam"],
+    p.add_argument("--scenario", default="toy",
+                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset: sets defaults for runs-dir, network, "
                         "n-freight, pickup stops, transit filters, F, sample rate")
     p.add_argument("--runs-dir", default=None,
@@ -367,6 +368,11 @@ def main() -> None:
                         "Free only on PRE-dwell runs: with --dwell-in-matsim the seconds "
                         "are an input to the schedule, so this is rejected rather than "
                         "silently returning identical numbers.")
+    p.add_argument("--force-sensitivity", action="store_true",
+                   help="Apply the four knobs above on a scenario other than line 44. "
+                        "Their brackets were built on the line-44 corridor and validated "
+                        "nowhere else, so results obtained this way must be reported as "
+                        "unvalidated.")
     p.add_argument("--no-resume", action="store_true",
                    help="Ignore an existing results_long.csv and recompute every cell. "
                         "By default the sweep RESUMES: cells already in that file are "
@@ -385,8 +391,21 @@ def main() -> None:
     van_stop_idle_s = _idle_map[args.van_stop_idle]
     van_load_factor = {"mean": 0.5, "full": 1.0}[args.van_load]
 
-    from scenario_presets import get_preset
+    from scenario_presets import check_sensitivity_allowed, get_preset
     preset = get_preset(args.scenario)
+
+    # Same line-44 gate as run_pipeline: only knobs moved away from the
+    # headline value count, so the default sweep runs on any scenario.
+    requested = {name: value for name, value, headline in
+                 (("van_stop_idle", args.van_stop_idle, "low"),
+                  ("van_load", args.van_load, "mean"),
+                  ("recon_seed", args.recon_seed, 42),
+                  ("extra_dwell_s", args.extra_dwell_s, None))
+                 if value != headline}
+    try:
+        check_sensitivity_allowed(preset.name, requested, args.force_sensitivity)
+    except ValueError as exc:
+        sys.exit(f"sensitivity_surface.py: error: {exc}")
 
     build_surface(
         runs_dir=args.runs_dir or preset.output_base_dir,
