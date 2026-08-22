@@ -65,6 +65,13 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--runs-dir", default=DEFAULT_RUNS)
     ap.add_argument("--out", default=DEFAULT_OUT)
+    # A re-measurement changes the SCENARIO cells and reuses the alpha=0 runs:
+    # the van departure grid and the handling time are both identical at alpha=0,
+    # so re-running the baselines would burn hours to reproduce them. Point this
+    # at the campaign that holds them; default is --runs-dir itself.
+    ap.add_argument("--baseline-dir", default=None,
+                    help="Where the alpha=0 runs live, when they are not in "
+                         "--runs-dir (default: --runs-dir).")
     # Which corridor these runs belong to. It was hardcoded to line 44, and that
     # is silent when wrong: line 44 runs in EVERY Rotterdam simulation, so L87
     # runs analysed as 'rotterdam' come back with line-44 trips, stops, parcels
@@ -93,6 +100,7 @@ def main() -> None:
     preset = get_preset(args.scenario)
     NET = preset.network_file
     RUNS = args.runs_dir
+    BASE_RUNS = args.baseline_dir or RUNS
     OUT = Path(args.out)
     OUT.mkdir(parents=True, exist_ok=True)
     LONG = OUT / "results_long.csv"
@@ -105,7 +113,7 @@ def main() -> None:
     for c in CONG:
         for w in WEIGHTS:
             for s in SEEDS:
-                base = events(RUNS, f"alpha000_{c}_{w}_seed{s}")
+                base = events(BASE_RUNS, f"alpha000_{c}_{w}_seed{s}")
                 if not base:
                     print(f"[skip] no baseline {c}/{w}/seed{s}", flush=True)
                     continue

@@ -91,9 +91,23 @@ public class Co2TotalsHandler implements WarmEmissionEventHandler, ColdEmissionE
 				java.util.Set<String> links;
 				try (java.util.stream.Stream<String> lines =
 							 Files.lines(Paths.get(url.toURI()), StandardCharsets.UTF_8)) {
+					// '#' lines are skipped, exactly as corridor_metrics.load_corridor_links
+					// does on the Python side. They were NOT, and a placeholder file whose
+					// only line was "# the real corridor comes from the alpha=0 events" was
+					// read as one link id that matches nothing: the feature looked enabled
+					// and wrote three rows of 0.000000 into co2_totals.csv, which is worse
+					// than writing nothing at all. Cost 9 Rotterdam runs on 2026-08-20.
 					links = lines.map(String::trim)
-							.filter(s -> !s.isEmpty())
+							.filter(s -> !s.isEmpty() && !s.startsWith("#"))
 							.collect(java.util.stream.Collectors.toUnmodifiableSet());
+				}
+				if (links.isEmpty()) {
+					// An empty set is indistinguishable from "no file" downstream, so say
+					// so here rather than let the rows silently disappear.
+					org.apache.logging.log4j.LogManager.getLogger(Co2TotalsHandler.class)
+							.warn("Co2TotalsHandler: {} holds no link id — those rows will "
+									+ "NOT be written", candidate);
+					return java.util.Set.of();
 				}
 				org.apache.logging.log4j.LogManager.getLogger(Co2TotalsHandler.class)
 						.info("Co2TotalsHandler: link set loaded from {} ({} links)",
