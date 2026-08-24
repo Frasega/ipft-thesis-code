@@ -135,11 +135,12 @@ def _consolidation(weight_per_unit_kg: float, van_tare_kg: float, consolidate: b
 
 
 def _mean_co2_per_van(vmean_df: pd.DataFrame, van_ids: list[str], van_mass_kg: float,
-                      rng_seed: int = 42) -> float:
+                      rng_seed: int = 42, exclude_links=None) -> float:
     """Average CO2 [kg] of one simulated van route at the given loaded mass."""
     if not van_ids:
         return 0.0
-    return co2_van_fleet(vmean_df, van_ids, van_mass_kg, rng_seed=rng_seed) / len(van_ids)
+    return co2_van_fleet(vmean_df, van_ids, van_mass_kg, rng_seed=rng_seed,
+                         exclude_links=exclude_links) / len(van_ids)
 
 
 # ── Per-van CO2 via speed-change method ────────────────────────────────────
@@ -186,6 +187,7 @@ def co2_van_fleet(
     van_ids: list[str],
     van_mass_kg: float,
     rng_seed: int = 42,
+    exclude_links: frozenset[str] | set[str] | None = None,
 ) -> float:
     """Sum CO2 over a list of van vehicle IDs from one MATSim run.
 
@@ -196,6 +198,15 @@ def co2_van_fleet(
       "speed_change" — historical constant-speed-per-link profile over the route.
 
     Uses a single groupby instead of per-van DataFrame filters to avoid O(n*m) scans.
+
+    exclude_links drops those links from the sum. It exists for the deadlocked
+    links of the Rotterdam network (make_deadlock_links.py), and it is NOT a
+    detail: on the line-44 corridor TWO links out of 96 carry 0.6% of the
+    distance and 70% of the time, one of them 30 m long holding a van for 46
+    minutes at 0.0 km/h. The formula charges idle fuel for every one of those
+    seconds — 1.48 of the 2.63 kg of a tour — and unlike the congestion terms it
+    does NOT cancel in the delta, because Term B counts tours REMOVED. Excluding
+    them is the same convention already used for the vehicle-hours rows.
     """
     if not van_ids:
         return 0.0
@@ -203,6 +214,10 @@ def co2_van_fleet(
     van_df = vmean_df[vmean_df["vehicle_id"].isin(van_ids_set)]
     if van_df.empty:
         return 0.0
+    if exclude_links:
+        van_df = van_df[~van_df["link_id"].isin(frozenset(exclude_links))]
+        if van_df.empty:
+            return 0.0
     has_tt = "travel_time_s" in van_df.columns
     total = 0.0
     for vid, group in van_df.groupby("vehicle_id", sort=False):
@@ -232,6 +247,137 @@ def co2_van_fleet(
     return total
 
 
+# ── Van kilometres, and Euro-class NOx on those kilometres ────────────────
+#
+# Everything below is ADDITIVE: no function above is modified, and no CO2 number
+# changes. Term B's CO2 comes from longitudinal dynamics; NOx cannot, because it
+# is not proportional to fuel (combustion temperature, EGR, SCR light-off). So
+# NOx is carried on the KILOMETRES instead, with published per-Euro-class
+# factors from euro_factors.py.
+#
+# The van is the one term where that works cleanly, because the scenario really
+# does take tours off the road: delta-km is large and real. (The bus is the
+# opposite case - same trips, same links, delta-km exactly zero - which is why
+# Term C uses engine work instead. See term_c.)
+
+def van_km_on_route(vmean_df: pd.DataFrame, van_ids: list[str]) -> float:
+    """
+    Kilometres driven by the given vans in one run.
+
+    Distance is taken as v_mean x travel_time, NOT from the network's link
+    lengths. The two are equal by construction - parse_events defines
+    v_mean = link_length / dt - but using the same two numbers the emission
+    model was charged with means the kilometres cannot silently disagree with
+    the CO2 they are supposed to accompany. It also inherits, for free, the
+    standing-time subtraction parse_events applies at bus stops.
+    """
+    if not van_ids:
+        return 0.0
+    d = vmean_df[vmean_df["vehicle_id"].isin(set(van_ids))]
+    if d.empty:
+        return 0.0
+    has_tt = "travel_time_s" in d.columns
+    tt = d["travel_time_s"].astype(float).clip(lower=1.0) if has_tt else 20.0
+    return float((d["v_mean_ms"].astype(float) * tt).sum() / 1000.0)
+
+
+def mean_km_per_van(vmean_df: pd.DataFrame, van_ids: list[str]) -> float:
+    """Average route length [km] of one simulated van. Mirrors _mean_co2_per_van."""
+    if not van_ids:
+        return 0.0
+    return van_km_on_route(vmean_df, van_ids) / len(van_ids)
+
+
+def mean_nox_g_per_van(vmean_df: pd.DataFrame, van_ids: list[str],
+                       fleet_mix: dict[str, float]) -> tuple[float, int]:
+    """
+    Average NOx [g] of one simulated van route, at its per-link mean speeds.
+
+    The factor is evaluated link by link at that link's own mean speed, so van
+    NOx responds to the congestion the scenario creates instead of being a flat
+    multiplier on a tour count. That costs nothing: the speeds are already in
+    the dataframe.
+
+    Returns (grams, n_links_outside_published_speed_range). The second number is
+    not decoration - a Tier 2 curve is only fitted over the speeds its source
+    states, and a corridor that spends most of its time below that range is a
+    caveat that belongs in the table caption.
+    """
+    from euro_factors import VAN_NOX, mix_factor
+
+    if not van_ids:
+        return 0.0, 0
+    d = vmean_df[vmean_df["vehicle_id"].isin(set(van_ids))]
+    if d.empty:
+        return 0.0, 0
+
+    has_tt = "travel_time_s" in d.columns
+    tt = d["travel_time_s"].astype(float).clip(lower=1.0) if has_tt else 20.0
+    v_ms = d["v_mean_ms"].astype(float)
+    km = (v_ms * tt) / 1000.0
+    v_kmh = v_ms * 3.6
+
+    before = sum(VAN_NOX[c].n_clamped for c in fleet_mix)
+    grams = float(sum(mix_factor(VAN_NOX, fleet_mix, v) * k
+                      for v, k in zip(v_kmh, km)))
+    after = sum(VAN_NOX[c].n_clamped for c in fleet_mix)
+    return grams / len(van_ids), after - before
+
+
+def compute_term_b_nox(
+    baseline_vmean_df: pd.DataFrame,
+    scenario_vmean_df: pd.DataFrame,
+    term_b_result: dict,
+    fleet_mix: dict[str, float],
+) -> dict:
+    """
+    Term B in NOx: the tailpipe NOx of the van tours no longer driven.
+
+    Structure is identical to the CO2 Term B, and deliberately reuses its tour
+    counts rather than recomputing them, so the two currencies can never
+    disagree about how many tours the operation removed:
+
+      Component 1  tours_baseline x (one van's NOx under BASELINE congestion)
+      Component 2  tours_scenario x (one van's NOx under SCENARIO congestion)
+      Term B NOx   Component 1 - Component 2, clamped at 0 like the CO2
+
+    Idle NOx at the delivery stops is NOT included. The CO2 side charges it from
+    a litres-per-second idle rate, and there is no defensible way to turn that
+    into NOx: idle NOx depends on whether the aftertreatment is above light-off,
+    which this model does not track. Report Term B NOx as running-only and say
+    so - it makes the van saving slightly CONSERVATIVE, which is the safe
+    direction for a saving.
+
+    Pass `fleet_mix` as {Euro class: share}, shares summing to 1.
+    """
+    van_ids_b = [v for v in baseline_vmean_df["vehicle_id"].unique()
+                 if v.startswith(VAN_ID_PREFIX)]
+    van_ids_s = [v for v in scenario_vmean_df["vehicle_id"].unique()
+                 if v.startswith(VAN_ID_PREFIX)]
+
+    nox_b, clamp_b = mean_nox_g_per_van(baseline_vmean_df, van_ids_b, fleet_mix)
+    nox_s, clamp_s = mean_nox_g_per_van(scenario_vmean_df, van_ids_s, fleet_mix)
+    km_b = mean_km_per_van(baseline_vmean_df, van_ids_b)
+    km_s = mean_km_per_van(scenario_vmean_df, van_ids_s)
+
+    n_b = term_b_result["tours_baseline"]
+    n_s = term_b_result["tours_scenario"]
+
+    c1, c2 = nox_b * n_b, nox_s * n_s
+    return {
+        "term_b_nox_g": max(0.0, c1 - c2),
+        "component1_nox_g": c1,
+        "component2_nox_g": c2,
+        "component1_km": km_b * n_b,
+        "component2_km": km_s * n_s,
+        "term_b_km": km_b * n_b - km_s * n_s,
+        "mean_km_per_tour": km_b,
+        "fleet_mix": dict(fleet_mix),
+        "n_links_outside_ef_speed_range": clamp_b + clamp_s,
+        "idle_nox_included": False,
+    }
+
+
 # ── Component 1: removed vans (counterfactual, baseline v_mean) ───────────
 
 def compute_component1(
@@ -246,6 +392,7 @@ def compute_component1(
     van_stop_idle_s: float = VAN_STOP_IDLE_S,
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
+    exclude_links=None,
 ) -> tuple[float, bool]:
     """
     CO2 that all N_total parcels' vans would have emitted under baseline congestion.
@@ -279,7 +426,7 @@ def compute_component1(
         # the loaded mass, then multiply by the number of tours (consolidated) or
         # the full parcel count (historical, parcels_per_tour=1 → n_tours=N).
         mean_per_van = _mean_co2_per_van(baseline_vmean_df, van_ids, van_mass,
-                                         rng_seed=rng_seed)
+                                         rng_seed=rng_seed, exclude_links=exclude_links)
         return mean_per_van * n_tours + stop_idle, False
     else:
         # Proxy: no vans in baseline — use background car v_mean as approximation
@@ -314,6 +461,7 @@ def compute_component2(
     van_stop_idle_s: float = VAN_STOP_IDLE_S,
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
+    exclude_links=None,
 ) -> float:
     """
     CO2 emitted by the backup vans actually present in the scenario run.
@@ -341,7 +489,7 @@ def compute_component2(
     # then scale to the number of consolidated tours, plus the per-tour delivery-stop
     # idle at the n_pickup_stops corridor lockers (bracketed; HANDOFF §3.4).
     mean_per_van = _mean_co2_per_van(scenario_vmean_df, van_ids, van_mass,
-                                     rng_seed=rng_seed)
+                                     rng_seed=rng_seed, exclude_links=exclude_links)
     stop_idle = n_tours * compute_co2_idle(van_stop_idle_s * n_pickup_stops,
                                            VAN_IDLE_FUEL_RATE_L_PER_S)
     return mean_per_van * n_tours + stop_idle
@@ -363,6 +511,7 @@ def compute_term_b(
     van_stop_idle_s: float = VAN_STOP_IDLE_S,
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
+    exclude_links: frozenset[str] | set[str] | None = None,
 ) -> dict:
     """
     Term B = Component1 − Component2 [kg CO2 saved per day by removing vans].
@@ -388,20 +537,35 @@ def compute_term_b(
     tours_scenario = (math.ceil((1 - alpha) * n_total_vans / parcels_per_tour)
                       if (1 - alpha) * n_total_vans > 0 else 0)
 
-    c1, used_proxy = compute_component1(
-        baseline_vmean_df, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
-        payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
-        load_factor, rng_seed
-    )
-    c2 = compute_component2(
-        scenario_vmean_df, alpha, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
-        payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
-        load_factor, rng_seed
-    )
+    def _both(excl):
+        a, proxy = compute_component1(
+            baseline_vmean_df, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
+            payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
+            load_factor, rng_seed, excl)
+        b = compute_component2(
+            scenario_vmean_df, alpha, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
+            payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
+            load_factor, rng_seed, excl)
+        return a, b, proxy
+
+    c1, c2, used_proxy = _both(None)
     term_b = max(0.0, c1 - c2)  # clamp at 0: savings cannot be negative by definition
+
+    # Second value, with the deadlocked links dropped. BOTH are reported, and the
+    # excluded one is the headline: the difference IS the size of the network
+    # artefact, and a reader who sees only one number cannot judge it.
+    if exclude_links:
+        c1x, c2x, _ = _both(exclude_links)
+        term_b_excl = max(0.0, c1x - c2x)
+    else:
+        c1x = c2x = term_b_excl = None
 
     return {
         "term_b_kg": term_b,
+        "term_b_excl_deadlock_kg": term_b_excl,
+        "component1_excl_deadlock_kg": c1x,
+        "component2_excl_deadlock_kg": c2x,
+        "n_excluded_links": len(exclude_links) if exclude_links else 0,
         "component1_kg": c1,
         "component2_kg": c2,
         "used_proxy": used_proxy,

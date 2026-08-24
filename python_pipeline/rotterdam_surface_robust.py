@@ -39,7 +39,8 @@ CONG = ["peak", "offpeak"]
 WEIGHTS = ["light", "medium", "heavy"]
 SEEDS = ["4711", "9876"]
 ALPHAS = ["025", "050", "075", "100"]
-KEEP = ["term_a_kg", "term_b_kg", "term_c_kg", "net_saving_kg_per_day",
+KEEP = ["term_a_kg", "term_b_kg", "term_b_excl_deadlock_kg", "n_deadlock_links",
+        "term_c_kg", "net_saving_kg_per_day",
         "net_robust_kg_per_day", "term_a_corridor_kg", "alpha_max",
         # dwell-in-MATSim split (None on pre-dwell runs)
         "term_a_vans_kg", "term_a_busstop_kg",
@@ -92,6 +93,11 @@ def main() -> None:
     ap.add_argument("--van-load", choices=["mean", "full"], default=None)
     ap.add_argument("--recon-seed", type=int, default=None)
     ap.add_argument("--extra-dwell-s", type=float, default=None)
+    ap.add_argument("--deadlock-links-dir", default="scenarios/ipft_rotterdam",
+                    help="Where deadlock_links.txt and deadlock_links_offpeak.txt "
+                         "live. The right one is picked per congestion level and "
+                         "passed to each cell; Term B is then reported twice, with "
+                         "and without those links.")
     ap.add_argument("--dwell-in-matsim", action="store_true",
                     help="Runs simulate the freight dwell in the schedule: Term C "
                          "idle uses the measured extra standing (scenario - baseline).")
@@ -141,6 +147,11 @@ def main() -> None:
                            "--alpha", str(af), "--weight", w, "--output", tmp]
                     if args.dwell_in_matsim:
                         cmd.append("--dwell-in-matsim")
+                    dl = (Path(args.deadlock_links_dir) /
+                          ("deadlock_links.txt" if c == "peak"
+                           else "deadlock_links_offpeak.txt"))
+                    if dl.exists():
+                        cmd += ["--deadlock-links", str(dl)]
                     for flag, val in (("--van-stop-idle", args.van_stop_idle),
                                       ("--van-load", args.van_load),
                                       ("--recon-seed", args.recon_seed),

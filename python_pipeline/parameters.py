@@ -54,6 +54,15 @@ BUS_CD = 0.66                            # drag coefficient (literature range 0.
 BUS_FRONTAL_AREA_M2 = 7.5                # 2.55 m width × ~3.0 m effective height (was 7.0; updated to spec)
 BUS_ROLLING_RESISTANCE = 0.009           # rolling resistance coefficient f
 BUS_DRIVETRAIN_EFF = 0.37               # fuel-to-wheel efficiency ηt (Zhai et al. 2008)
+# Gearbox + axle efficiency, used ONLY to convert the Term C mass delta from
+# wheel work into ENGINE work, because heavy-duty NOx is certified in g/kWh at
+# the engine, not at the wheel. It does not enter any CO2 number.
+# Sanity check that ties it to something physical: the implied brake thermal
+# efficiency is BUS_DRIVETRAIN_EFF / BUS_TRANSMISSION_EFF = 0.37 / 0.90 = 0.411,
+# which is where a modern Euro VI urban diesel should sit. If a different
+# transmission figure pushes that outside roughly 0.38–0.44, it is the
+# transmission number that is wrong, not the model. term_c asserts this.
+BUS_TRANSMISSION_EFF = 0.90
 # Midrange of DOE transit-bus idle range 0.8–1.0 L/h. Cancels in scenario deltas;
 # absolute value only matters for the additive CO2_idle_extra (extra freight dwell).
 BUS_IDLE_FUEL_RATE_L_PER_S = 0.9 / 3600  # 0.9 L/h → L/s

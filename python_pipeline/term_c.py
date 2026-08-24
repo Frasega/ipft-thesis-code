@@ -62,11 +62,108 @@ from parameters import (
     BUS_IDLE_FUEL_RATE_L_PER_S,
     BUS_ROLLING_RESISTANCE,
     BUS_TARE_KG,
+    BUS_TRANSMISSION_EFF,
     BUS_TRIPS_PER_DAY,
+    CALORIFIC_VALUE_DIESEL_MJ_PER_L,
+    CO2_FACTOR_KG_PER_L,
     EXTRA_DWELL_PER_UNIT_S,
     BUS_ID_PREFIXES,
 )
 from sort_cycles import reconstruct_bus_profile
+
+
+# ── Term C in NOx: engine work, not kilometres ────────────────────────────
+#
+# Everything in this block is ADDITIVE. No CO2 number changes.
+#
+# THE POINT, IN ONE SENTENCE: the bus drives the same F trips on the same links
+# whether or not it carries the freight, so delta-bus-km is EXACTLY ZERO and a
+# g/km emission factor would return exactly zero. What changes is tractive work
+# (the extra mass) and standing time (the extra dwell) - and heavy-duty NOx is
+# certified in g/kWh over the WHTC, which matches that structure directly.
+#
+# The conversion needs no new physics, because emission_formula is linear:
+#     E_fuel[J] -> MJ -> litres (/35.8) -> kg CO2 (x2.65)
+# and compute_power_array already divides by BUS_DRIVETRAIN_EFF, which
+# parameters.py documents as fuel-to-wheel. So, running it backwards:
+#     W_wheel [kWh]  = CO2[kg] x (35.8 / 2.65 / 3.6) x 0.37   = CO2 x 1.389
+#     W_engine [kWh] = W_wheel / BUS_TRANSMISSION_EFF          = CO2 x 1.543
+#
+# What is being assumed, stated plainly so it can be defended or attacked:
+# adding a few hundred kg to a 12 t bus does not move the engine far enough on
+# its operating map to change its SPECIFIC NOx. That is why this is legitimate
+# where scaling absolute NOx off absolute fuel would not be: the Euro class and
+# the SCR live entirely inside the external g/kWh factor, which is not derived
+# from the fuel model.
+
+def co2_kg_to_engine_kwh(co2_kg: float,
+                         drivetrain_eff: float = BUS_DRIVETRAIN_EFF,
+                         transmission_eff: float = BUS_TRANSMISSION_EFF) -> float:
+    """
+    Engine work [kWh] that produced a given tractive CO2 [kg], for this bus.
+
+    Raises if the implied brake thermal efficiency is not physically sane, which
+    is the cheapest possible guard against someone changing one of the two
+    efficiencies without thinking about the other.
+    """
+    bte = drivetrain_eff / transmission_eff
+    if not (0.30 <= bte <= 0.50):
+        raise ValueError(
+            f"implied brake thermal efficiency {bte:.3f} "
+            f"(= {drivetrain_eff} / {transmission_eff}) is not a physical value "
+            f"for a diesel engine. A modern Euro VI urban bus sits near 0.41. "
+            f"Fix BUS_TRANSMISSION_EFF or BUS_DRIVETRAIN_EFF, not this check.")
+    kwh_fuel = co2_kg / CO2_FACTOR_KG_PER_L * CALORIFIC_VALUE_DIESEL_MJ_PER_L / 3.6
+    return kwh_fuel * drivetrain_eff / transmission_eff
+
+
+def compute_term_c_nox(term_c_result: dict, euro_class: str,
+                       bus_trips_per_day: int | None = None) -> dict:
+    """
+    Term C in NOx: the extra tailpipe NOx of carrying freight on the bus.
+
+    Two independent parts, kept separate because they behave differently and
+    because a reader will want to know which one dominates:
+
+      running   extra tractive work from the freight mass, x g/kWh
+      idle      extra standing time at the delivery stops,  x g/h
+
+    The idle part is the one to watch. Prolonged idling cools the SCR below its
+    light-off temperature and NOx conversion collapses, so the Euro VI advantage
+    can narrow or vanish precisely there. That is a mechanism, not a guess - but
+    it is a mechanism this model does not simulate, so it enters only through
+    whatever idle factor is entered in euro_factors.BUS_NOX_IDLE. Choose that
+    number knowing what it is doing.
+
+    Reuses term_c_result rather than recomputing anything, so the CO2 and the
+    NOx can never disagree about how much extra work or dwell there was.
+    """
+    from euro_factors import BUS_NOX_IDLE, BUS_NOX_RUNNING
+
+    F = bus_trips_per_day if bus_trips_per_day is not None else BUS_TRIPS_PER_DAY
+
+    running_co2_per_trip = term_c_result["co2_running_delta_kg_per_trip"]
+    dwell_s_per_trip = term_c_result["extra_dwell_s_per_trip"]
+
+    kwh_per_trip = co2_kg_to_engine_kwh(running_co2_per_trip)
+    nox_running_per_trip = kwh_per_trip * BUS_NOX_RUNNING[euro_class].at()
+    nox_idle_per_trip = dwell_s_per_trip / 3600.0 * BUS_NOX_IDLE[euro_class].at()
+
+    return {
+        "term_c_nox_g_per_day": (nox_running_per_trip + nox_idle_per_trip) * F,
+        "nox_running_g_per_day": nox_running_per_trip * F,
+        "nox_idle_g_per_day": nox_idle_per_trip * F,
+        "engine_kwh_per_trip": kwh_per_trip,
+        "engine_kwh_per_day": kwh_per_trip * F,
+        "extra_dwell_s_per_trip": dwell_s_per_trip,
+        "extra_dwell_h_per_day": dwell_s_per_trip * F / 3600.0,
+        "euro_class": euro_class,
+        "bus_trips_per_day": F,
+        # Delta-km is zero BY CONSTRUCTION, not by measurement: same trips, same
+        # links. Carried explicitly so a reader never wonders whether it was
+        # forgotten, and so a km-based factor can be shown to give zero.
+        "delta_bus_km_per_day": 0.0,
+    }
 
 
 # ── Measured extra standing (dwell simulated inside MATSim) ────────────────

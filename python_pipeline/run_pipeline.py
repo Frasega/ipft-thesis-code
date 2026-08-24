@@ -91,6 +91,7 @@ def run_scenario(
     recon_seed: int = 42,
     extra_dwell_per_unit_s: float | None = None,
     dwell_in_matsim: bool = False,
+    deadlock_links_file: str | None = None,
 ) -> dict:
     """
     Run the full pipeline for one (alpha, weight_regime) scenario.
@@ -159,6 +160,18 @@ def run_scenario(
         keep_links = frozenset((corr_links or frozenset())
                                | (busstop_links or frozenset()))
 
+    # Deadlocked links: a handful of links in the Zuidplein area hold vehicles
+    # for tens of minutes over a few tens of metres. Term A cancels them (they
+    # are on both sides of the delta) but Term B does NOT, because it counts
+    # tours removed and each removed tour takes its idle fuel with it.
+    deadlock_links = None
+    if deadlock_links_file and Path(deadlock_links_file).exists():
+        from corridor_metrics import load_corridor_links
+        deadlock_links = load_corridor_links(deadlock_links_file)
+        if verbose:
+            print(f"[Step 4] deadlock links excluded from Term B: "
+                  f"{len(deadlock_links)} ({deadlock_links_file})")
+
     # ── Parse baseline events ──────────────────────────────────────────────
     if verbose:
         print(f"\n[Step 3] Parsing baseline events: {baseline_events_path}")
@@ -210,6 +223,7 @@ def run_scenario(
         load_factor=(van_load_factor if van_load_factor is not None
                      else VAN_LOAD_FACTOR),
         rng_seed=recon_seed,
+        exclude_links=deadlock_links,
     )
     if verbose:
         proxy_note = " [PROXY — no vans in baseline run]" if term_b_result["used_proxy"] else ""
@@ -353,6 +367,10 @@ def run_scenario(
         "binding_constraint": feas.binding_constraint,
         "term_a_kg": term_a_kg,
         "term_b_kg": term_b_kg,
+        "term_b_excl_deadlock_kg": (term_b_result["term_b_excl_deadlock_kg"] * scale
+                                    if term_b_result.get("term_b_excl_deadlock_kg") is not None
+                                    else None),
+        "n_deadlock_links": term_b_result.get("n_excluded_links", 0),
         "term_c_kg": term_c_kg,
         "net_saving_kg_per_day": net_saving,
         "net_robust_kg_per_day": net_robust,
@@ -454,6 +472,11 @@ def _parse_args() -> argparse.Namespace:
                    help="Per-parcel freight-handling dwell seconds (TCQSM range 3-15 s). "
                         "Rejected together with --dwell-in-matsim, where the seconds are "
                         "an input to the schedule and this would change nothing.")
+    p.add_argument("--deadlock-links", default=None,
+                   help="File of link ids to drop from Term B (peak and off-peak "
+                        "have their own list: deadlock_links.txt / "
+                        "deadlock_links_offpeak.txt). Both values are reported — "
+                        "term_b_kg with them, term_b_excl_deadlock_kg without.")
     p.add_argument("--force-sensitivity", action="store_true",
                    help="Apply the four knobs above on a scenario other than line 44. "
                         "Their brackets were built on the line-44 corridor and validated "
@@ -524,6 +547,7 @@ def main() -> None:
         corridor_links_file=preset.corridor_links_file,
         bus_stop_links_file=preset.bus_stop_links_file,
         dwell_in_matsim=args.dwell_in_matsim,
+        deadlock_links_file=args.deadlock_links,
         van_stop_idle_s=van_stop_idle_s,
         van_load_factor=van_load_factor,
         recon_seed=args.recon_seed if args.recon_seed is not None else 42,

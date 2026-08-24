@@ -1,5 +1,6 @@
 """
-Congestion deltas on every ring, in CO2 and vehicle-hours, next to their noise.
+Congestion deltas on every ring, in CO2, NOx, NO2, PM2.5 and vehicle-hours,
+next to their noise.
 
 This is what the reply to Patrick promised: corridor, one hop, two hops, three
 hops and the full network, each beside the seed-to-seed noise so it is visible
@@ -12,12 +13,25 @@ Two terms, never merged — they point in opposite directions:
 Both are reported as baseline - scenario, so the bus cost comes out negative on
 its own and is never sign-flipped by hand.
 
-CO2 is recomputed from the events (recompute_link_co2), because the Java buckets
-were fixed at run time and cannot answer for the rings. Both lookup rules are
-carried: 'average' is what the runs used (a step at the stop&go table speed) and
-'fraction' is MATSim's continuous blend. The full network is NOT recomputed —
-parsing every car on every link would not fit in memory — it is read from the
-Java 'background' bucket, which is exactly that quantity.
+Emissions are recomputed from the events (recompute_link_co2), because the Java
+buckets were fixed at run time and cannot answer for the rings. Both lookup
+rules are carried: 'step' is AverageSpeed (a step at the stop&go table speed)
+and 'cont' is StopAndGoFraction, MATSim's continuous blend. Which one a given
+run used is written in that run's own output_config.xml; the census of the runs
+on disk (23/08/2026) is that EVERY Rotterdam run used StopAndGoFraction, so the
+'cont' columns are the ones that describe this campaign and the 'step' columns
+are the counterfactual. (An earlier version of this docstring said the opposite;
+it predated generate_configs.py setting the parameter.) The full network is NOT
+recomputed — parsing every car on every link would not fit in memory — it is
+read from the Java 'background' bucket, which is exactly that quantity, and
+which exists for CO2 only.
+
+The pollutant columns cost nothing: same events, same reconstructed speeds, same
+two-row HBEFA table, a different Component column. They are emitted in their
+reporting units (NOx and NO2 in grams, PM2.5 in milligrams) so no rescaling is
+needed on the way to a table. Note that they are BACKGROUND traffic only — van
+and bus NOx cannot come from HBEFA at all, because those categories carry only
+CO2(total), and are handled with external Euro-class factors instead.
 
 NOISE: for each (weight, congestion) the two alpha=0 baselines are physically
 identical and differ only by the seed, so their difference on a set is that
@@ -41,7 +55,7 @@ import pandas as pd
 
 from corridor_metrics import corridor_background_stats, corridor_delta
 from parse_events import load_link_attributes, parse_events
-from recompute_link_co2 import co2_by_set, load_hbefa
+from recompute_link_co2 import emissions_by_set, load_hbefa
 from scenario_presets import get_preset
 
 ALPHAS = [0.25, 0.50, 0.75, 1.00]
@@ -140,8 +154,8 @@ def main() -> None:
 
             def emit(tag, seed, adf, ajava, bdf, bjava):
                 """a - b on every set, both currencies."""
-                ca = co2_by_set(adf, lengths, freespeeds, hbefa, sets).set_index("link_set")
-                cb = co2_by_set(bdf, lengths, freespeeds, hbefa, sets).set_index("link_set")
+                ca = emissions_by_set(adf, lengths, freespeeds, hbefa, sets).set_index("link_set")
+                cb = emissions_by_set(bdf, lengths, freespeeds, hbefa, sets).set_index("link_set")
                 for name in sets:
                     st_a = corridor_background_stats(adf, sets[name], lengths)
                     st_b = corridor_background_stats(bdf, sets[name], lengths)
@@ -152,6 +166,18 @@ def main() -> None:
                         d_co2_step=ca.loc[name, "co2_average_kg"] - cb.loc[name, "co2_average_kg"],
                         d_co2_cont=ca.loc[name, "co2_fraction_kg"] - cb.loc[name, "co2_fraction_kg"],
                         d_vehicle_hours=d["delta_vehicle_hours"])
+                    # Pollutants, in the unit they are actually reported in, so
+                    # nothing has to be rescaled by hand on the way to a table.
+                    # These come free: same events, same speeds, same two-row
+                    # HBEFA lookup, a different Component column.
+                    for slug, unit, mul in (("nox", "g", 1e3), ("no2", "g", 1e3),
+                                            ("pm25", "mg", 1e6)):
+                        row[f"d_{slug}_step_{unit}"] = (
+                            ca.loc[name, f"{slug}_average_kg"]
+                            - cb.loc[name, f"{slug}_average_kg"]) * mul
+                        row[f"d_{slug}_cont_{unit}"] = (
+                            ca.loc[name, f"{slug}_fraction_kg"]
+                            - cb.loc[name, f"{slug}_fraction_kg"]) * mul
                     if deadlocks:
                         ea = corridor_background_stats(adf, sets[name], lengths, deadlocks)
                         eb = corridor_background_stats(bdf, sets[name], lengths, deadlocks)
