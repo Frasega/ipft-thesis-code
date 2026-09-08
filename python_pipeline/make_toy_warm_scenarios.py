@@ -42,7 +42,7 @@ WARM_PLANS_DIR.mkdir(parents=True, exist_ok=True)
 def frozen_plans(congestion: str) -> str:
     """Return the frozen longbase plans path. MATSim writes .zst (insert_vans needs
     .xml/.gz) → auto-decompress the .zst to .xml once."""
-    d = Path(f"D:/TesiOutputs/ipft_toy_longbase_{congestion}")
+    d = OUTPUT_ROOT / f"ipft_toy_longbase_{congestion}"
     for name in ("output_plans.xml", "output_plans.xml.gz"):
         if (d / name).exists():
             return str(d / name)

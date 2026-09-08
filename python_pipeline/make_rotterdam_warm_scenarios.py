@@ -43,7 +43,7 @@ tree, so the pre-dwell surface stays untouched:
         (--filter is a plain substring match: "RDWELL" would launch the bay
          variant too, i.e. 120 runs instead of 60)
     python python_pipeline/rotterdam_surface_robust.py \
-        --runs-dir D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs \
+        --runs-dir <output_root>/ipft_rotterdam_dwell_blocking_runs \
         --out output/sensitivity_rotterdam_dwell_blocking --dwell-in-matsim
 
 The alpha=0 BASELINE gets the same variant schedule (dwell 0 s, but isBlocking
@@ -63,6 +63,7 @@ from insert_vans import create_plans_file
 from generate_configs import patch_config, _write_config_with_doctype
 from parameters import ALPHA_VALUES, RANDOM_SEEDS, WEIGHT_REGIMES, c_van
 from scenario_presets import OUTPUT_ROOT, get_preset
+from config.paths import run_file  # resolves the optional MATSim runId prefix
 
 WARM_ITERS = 1
 preset = get_preset("rotterdam")
@@ -86,8 +87,15 @@ _SEED_DIRS = {
 _KEEP_STRATEGY = "ChangeExpBeta"
 
 
-def rotterdam_seed(congestion: str) -> str:
+def rotterdam_seed(congestion: str, longbase_suffix: str = "") -> str:
     """Path to the frozen longbase output_plans for this congestion level.
+
+    `longbase_suffix` selects WHICH equilibrium to branch from. It exists because the
+    bus PCE is set before the equilibration, not after: a campaign at a different PCE
+    equilibrates into a different network state and writes to its own longbase
+    directory. Defaulting to the unsuffixed one and carrying on would be the worst
+    possible failure - warm runs at one PCE branching from an equilibrium computed at
+    another, with every number looking plausible.
 
     The STRIPPED file wins when present. The LONGBASE ends with 5 plans per
     person, and one warm iteration does not stop ChangeExpBeta from picking a
@@ -99,21 +107,29 @@ def rotterdam_seed(congestion: str) -> str:
     Produced by:
         python python_pipeline/strip_selected_plans.py IN.xml.zst OUT_stripped.xml.gz
     """
-    d = OUTPUT_ROOT / _SEED_DIRS[congestion]
-    for name in ("MRDH_10pct.output_plans_stripped.xml.gz",
-                 "output_plans_stripped.xml.gz"):
-        if (d / name).exists():
-            return str(d / name)
-    for name in ("MRDH_10pct.output_plans.xml.zst", "output_plans.xml.zst",
-                 "output_plans.xml.gz", "output_plans.xml"):
-        if (d / name).exists():
+    d = OUTPUT_ROOT / (_SEED_DIRS[congestion] + longbase_suffix)
+    # run_file resolves the optional runId prefix, so this no longer only works on a
+    # city whose runId happens to be 'MRDH_10pct.'.
+    stripped = run_file(d, "output_plans_stripped.xml.gz", required=False)
+    if stripped is not None:
+        return str(stripped)
+    for name in ("output_plans.xml.zst", "output_plans.xml.gz", "output_plans.xml"):
+        hit = run_file(d, name, required=False)
+        if hit is not None:
             print(f"[warn] {congestion}: using the UNSTRIPPED longbase plans "
-                  f"({name}) — ChangeExpBeta will re-pick between baseline and "
+                  f"({hit.name}) — ChangeExpBeta will re-pick between baseline and "
                   f"scenario. Run strip_selected_plans.py first.")
-            return str(d / name)
+            return str(hit)
     raise FileNotFoundError(
-        f"longbase output_plans not found in {d} — run the {congestion} LONGBASE first "
-        f"(config_LONGBASE_{congestion}_seed4711.xml).")
+        f"longbase output_plans not found in {d} — run the {congestion} LONGBASE first:\n"
+        f"  python scenarios/ipft_rotterdam/make_longbase_config.py"
+        + (f" --pt-vehicles <the file whose tag is '{longbase_suffix.lstrip('_')}'>"
+           if longbase_suffix else "")
+        + f"\n  python python_pipeline/scenario_runner.py --config "
+          f"scenarios/ipft_rotterdam/generated/config_LONGBASE*_{congestion}_*.xml "
+          f"--heap 12g\n"
+          f"There is deliberately no fallback to another equilibrium: branching a "
+          f"campaign off the wrong one produces numbers that look right.")
 
 
 def freeze_replanning_rotterdam(tree: ET.ElementTree) -> ET.ElementTree:
@@ -144,6 +160,44 @@ def dwell_schedule_for(alpha: float, tag: str, schedules_dir: Path) -> str:
             f"{path} not found — run 'python python_pipeline/make_dwell_schedules.py "
             f"--blocking {'true' if tag == 'blocking' else 'false'}' first.")
     return str(path.resolve())
+
+
+def pt_vehicles_for(spec: str | None, preset) -> tuple[str | None, str]:
+    """Resolve --pt-vehicles into (the value written into the config, a campaign tag).
+
+    The transit vehicles file is where the bus PCE lives, and the PCE decides how much
+    link storage a stopped bus occupies — on eleven of the fourteen line-44 stop links,
+    at PCE 2.8 and a 10% storage factor, a single bus fills the link on its own. A
+    campaign at a different PCE is therefore a DIFFERENT campaign, not a variant of the
+    same one, so the file name earns a tag of its own in every config name and in the
+    output tree. Without that the two campaigns would share config names and run
+    directories and the second would silently overwrite the first.
+
+    Passing the file the city already declares is a no-op and gets no tag: it is the
+    baseline campaign, said out loud.
+    """
+    if not spec:
+        return None, ""
+    name = Path(spec).name
+    scen_dir = Path(preset.base_config).parent
+    if not (scen_dir / name).exists():
+        raise SystemExit(
+            f"--pt-vehicles {spec}: {scen_dir / name} does not exist. The transit "
+            f"vehicles file must sit in the scenario directory next to the base "
+            f"config, because the path written into the config is resolved from the "
+            f"generated/ subdirectory as '../{name}'.")
+    value = spec if spec.startswith("../") else f"../{name}"
+    if value == getattr(preset, "transit_vehicles_file", None):
+        print(f"[pce] {name} is the city's own transit vehicles file — baseline "
+              f"campaign, no extra tag")
+        return value, ""
+    stem = Path(name).stem
+    for lead in ("ptVehicle", "ptvehicle", "pt_vehicles", "vehicles"):
+        if stem.startswith(lead):
+            stem = stem[len(lead):]
+            break
+    tag = "".join(ch for ch in stem if ch.isalnum()).upper() or "PTVEH"
+    return value, tag
 
 
 def main() -> None:
@@ -184,6 +238,20 @@ def main() -> None:
                          "Without it a second campaign OVERWRITES the configs of the "
                          "first, which is how a re-measurement quietly becomes a "
                          "re-run of the old one. Example: --config-tag GRID.")
+    ap.add_argument("--pt-vehicles", default=None,
+                    help="Transit vehicles file to run with, e.g. ptVehiclePCE028.xml. "
+                         "This is the file that carries the bus PCE, and it is the "
+                         "only place the road space a bus consumes can be changed. "
+                         "It must sit in the scenario directory. Its name becomes a "
+                         "tag in every config name and in the run directory, so a "
+                         "second PCE is a second campaign rather than an overwrite of "
+                         "the first. Default: whatever the city declares.")
+    ap.add_argument("--longbase-suffix", default=None,
+                    help="Which equilibrium to branch from, as the suffix on the "
+                         "longbase run directory (e.g. '_pce028'). Defaults to the "
+                         "tag --pt-vehicles derives, which is what makes a PCE "
+                         "campaign branch from its OWN equilibration. Pass '' to "
+                         "force the unsuffixed one.")
     args = ap.parse_args()
     global preset, GEN
     preset = get_preset(args.scenario)
@@ -198,25 +266,33 @@ def main() -> None:
     # The tag MUST be in the config name: blocking and bay write to different
     # output trees but would otherwise share config file names and overwrite
     # each other. "--filter RDWELL" still matches both variants.
+    pt_vehicles, pt_tag = pt_vehicles_for(args.pt_vehicles, preset)
     cfg_prefix = ((f"RDWELL{dwell_tag.upper()}" if dwell_tag else "RWARM")
-                  + sfx.replace("_", "") + args.config_tag.upper())
+                  + sfx.replace("_", "") + args.config_tag.upper() + pt_tag)
     warm_dir = Path(args.warm_plans_dir) if args.warm_plans_dir else WARM_PLANS_DIR
     warm_dir.mkdir(parents=True, exist_ok=True)
     if args.output_base_dir:
         out_base = Path(args.output_base_dir)
     elif dwell_tag:
-        out_base = (OUTPUT_ROOT
-                    / f"ipft_rotterdam{sfx}_dwell_{dwell_tag}{args.config_tag.lower()}_runs")
+        pt_suffix = f"_{pt_tag.lower()}" if pt_tag else ""
+        out_base = (OUTPUT_ROOT / f"ipft_rotterdam{sfx}_dwell_{dwell_tag}"
+                                  f"{args.config_tag.lower()}{pt_suffix}_runs")
     else:
         out_base = Path(preset.output_base_dir)
+        if pt_tag:
+            out_base = out_base.with_name(f"{out_base.name}_{pt_tag.lower()}")
     if dwell_tag:
         print(f"[dwell] variant={dwell_tag}  schedules={sched_dir}\n"
               f"[dwell] output tree={out_base}  configs=config_{cfg_prefix}_*")
+    if pt_vehicles:
+        print(f"[pce] transit vehicles = {pt_vehicles}  (tag {pt_tag or '-'})")
 
     N = preset.n_freight_units_sim          # 470 simulated parcels
     runs = []
+    longbase_suffix = (args.longbase_suffix if args.longbase_suffix is not None
+                       else (f"_{pt_tag.lower()}" if pt_tag else ""))
     for congestion in levels:
-        base = rotterdam_seed(congestion)
+        base = rotterdam_seed(congestion, longbase_suffix)
         print(f"[{congestion}] seed = {base}")
         wanted = args.weights or list(WEIGHT_REGIMES)
         for weight_regime, weight_kg in WEIGHT_REGIMES.items():
@@ -255,6 +331,7 @@ def main() -> None:
                         plans_file=str(Path(plans_path).resolve()),
                         output_dir=out, seed=seed, last_iteration=WARM_ITERS, preset=preset,
                         transit_schedule_file=sched,
+                        transit_vehicles_file=pt_vehicles,
                     )
                     freeze_replanning_rotterdam(tree)
                     ET.indent(tree, space="  ")
@@ -264,8 +341,9 @@ def main() -> None:
                 dwell_note = (f" dwell={Path(sched).name}" if sched else "")
                 print(f"  alpha={astr} {congestion:7s} {weight_regime:6s} "
                       f"(C_van={cvan}) -> {n_tours} van-tours{dwell_note}")
-    surface_out = (f"output/sensitivity_rotterdam{sfx}_dwell_{dwell_tag}" if dwell_tag
-                   else f"output/sensitivity_rotterdam{sfx}")
+    pt_out = f"_{pt_tag.lower()}" if pt_tag else ""
+    surface_out = (f"output/sensitivity_rotterdam{sfx}_dwell_{dwell_tag}{pt_out}" if dwell_tag
+                   else f"output/sensitivity_rotterdam{sfx}{pt_out}")
     dwell_flag = " --dwell-in-matsim" if dwell_tag else ""
     print(f"\nGenerated {len(runs)} Rotterdam warm configs (config_{cfg_prefix}_*). Run with:\n"
           f"  scenario_runner.py --scenario rotterdam --filter {cfg_prefix} --heap <fit> "

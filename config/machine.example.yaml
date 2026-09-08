@@ -1,0 +1,38 @@
+# Where THIS computer keeps things. Copy to machine.yaml and edit.
+#
+# machine.yaml is git-ignored on purpose: it is the only file whose contents are
+# about your hardware rather than about the model, so it must never travel with the
+# code. Everything else in config/ is the same on every machine.
+#
+# If machine.yaml is absent this example is used, and the environment variable
+# IPFT_OUTPUT_ROOT still overrides output_root wherever it is set.
+
+schema: ipft-machine/1
+
+output_root:
+  value: D:/TesiOutputs
+  note: >
+    One MATSim run is roughly 600 MB, almost all of it the compressed event file, and
+    a full campaign is tens of GB. Put this on a disk with room and OUTSIDE any
+    cloud-synced folder - syncing multi-GB event files uploads them forever and
+    achieves nothing. On a machine with no D: drive, point this anywhere with space.
+
+jar:
+  value: matsim-example-project-0.0.1-SNAPSHOT.jar
+  note: >
+    Relative to the project root. Rebuild after ANY change to the Java sources with
+    ./mvnw.cmd package -DskipTests - the CO2 buckets and the corridor link sets are
+    computed on the Java side, so a stale jar silently reports the old ones.
+
+heap:
+  value: 7g
+  note: >
+    JVM maximum heap for one MATSim run. Undersizing it does not fail loudly: the run
+    thrashes the garbage collector and simply gets slower. After a run, check that the
+    ceiling in its own logfile ("max: NNNN MB") matches what was asked for here -
+    a mismatch means the setting did not reach the JVM.
+
+java_home:
+  value: null
+  note: >
+    Leave null to use $JAVA_HOME, then whatever `java` is on PATH.

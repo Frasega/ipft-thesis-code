@@ -51,6 +51,15 @@ Python side, from a clean environment (developed on Python 3.13):
 pip install -r requirements.txt
 ```
 
+Everything in `requirements.txt` has a wheel for CPython 3.13, so it installs without a
+compiler. `requirements-optional.txt` holds the one dependency that does not — `wltp`, needed
+only to rebuild the WLTC driving cycles, which are committed under `python_pipeline/cycle_data/`.
+
+Where the inputs live is itself configuration, not code: `config/cities/*.yaml` describes the
+simulated world, `config/lines/*.yaml` the corridor freight rides on, and `config/machine.yaml`
+(copy `machine.example.yaml`) says where this particular computer keeps things. `python ipft.py
+describe rotterdam` prints every input value, what it means and where it came from.
+
 Every script is launched **from the project root**, not from inside `python_pipeline/`:
 
 ```bash
@@ -76,6 +85,19 @@ python python_pipeline/test_dwell_idle_guard.py    # guards on the measured-idle
 
 `RUNNING.md` is the campaign cheat-sheet: what launches what, in which order, how each step is
 verified, and what the failure mode of each step looks like.
+
+### On a cluster
+
+A full campaign is ~60 one-iteration runs plus two 80-iteration equilibrations: two days on one
+workstation, one night on a cluster. `cluster/` holds the SLURM side of it — a bootstrap script
+for the login node, four job scripts, and a README with the measured wall times and memory
+figures the job sizes were derived from. Nothing in it is tied to one account or one machine:
+every path comes from an environment variable.
+
+```bash
+bash cluster/bootstrap.sh            # login node: JDK, venv, machine.yaml, the jar
+sbatch cluster/job_longbase.sbatch peak
+```
 
 ## Repository layout
 

@@ -50,36 +50,74 @@ from emission_formula import (
 from parameters import (
     AVG_PERSON_WEIGHT_KG,
     CONSOLIDATE_VANS,
-    VAN_CD,
-    VAN_DRIVETRAIN_EFF,
-    VAN_FRONTAL_AREA_M2,
+    # The drag, area, rolling and drivetrain constants are NOT imported here any
+    # more: they are properties of a vehicle, and this file now reads them from
+    # the VanType it is given. VAN_TYPES["base"] is assembled from exactly those
+    # constants, so the default path is unchanged — but there is one place that
+    # says what van is being emitted, and it is not this file.
     VAN_IDLE_FUEL_RATE_L_PER_S,
     VAN_KINEMATICS,
-    VAN_ROLLING_RESISTANCE,
     VAN_TARE_KG,
     VAN_ID_PREFIX,
     VAN_PAYLOAD_CAPACITY_KG,
     VAN_PARCELS_PER_TOUR_MAX,
     VAN_STOP_IDLE_S,
     VAN_LOAD_FACTOR,
+    VAN_TYPES,
+    VanType,
     c_van,
 )
 from van_cycles import IDLE_THRESH_MS, reconstruct_van_profile
 
-
-# ── WLTC per-link van CO2 (with per-(v_mean, mass) cache) ─────────────────
-# The CO2 of a reconstructed WLTC profile depends only on (v_mean, van_mass);
-# the link length enters only through the t_actual/t_sort scaling. So we cache
-# the CO2-PER-SECOND of each distinct (rounded v_mean, mass) and multiply by the
-# link travel time. This collapses ~90k per-link reconstructions per fleet to a
-# few hundred — same length-scaling logic as the bus (term_c._delta_co2_on_link).
-_VAN_CO2_PER_S_CACHE: dict[tuple[float, float], float] = {}
+# The headline vehicle, assembled in parameters.py from the same module constants
+# this file used to read directly. Every function below takes a VanType and
+# defaults to this one, so the default path is arithmetically identical to what it
+# was before the van size became a variable.
+BASE_VAN: VanType = VAN_TYPES["base"]
 
 
-def _van_co2_per_second(v_mean_ms: float, van_mass_kg: float, rng_seed: int = 42) -> float:
+def _resolve_van(van: VanType | None, van_tare_kg: float,
+                 payload_capacity_kg: float, parcels_per_tour_max: int
+                 ) -> tuple[float, float, int, VanType]:
+    """Reconcile the loose vehicle arguments with a whole van type.
+
+    The loose ones came first and are still how the van-capacity screening sweeps
+    consolidation capacity on its own. When a VanType is given it WINS on all
+    three, because that is the point of the object: a different vehicle is lighter
+    AND less capacious AND smaller in frontal area, and letting a caller pass a
+    large van's payload with the base van's tare would reintroduce exactly the
+    'same van, bigger cargo bay' error the type exists to prevent.
+    """
+    if van is None:
+        return van_tare_kg, payload_capacity_kg, parcels_per_tour_max, BASE_VAN
+    return van.tare_kg, van.payload_capacity_kg, van.parcels_per_tour_max, van
+
+
+# ── WLTC per-link van CO2 (with per-(v_mean, mass, vehicle) cache) ────────
+# The CO2 of a reconstructed WLTC profile depends only on (v_mean, van_mass) and
+# the vehicle's drag and rolling parameters; the link length enters only through
+# the t_actual/t_sort scaling. So we cache the CO2-PER-SECOND of each distinct
+# (rounded v_mean, mass, vehicle) and multiply by the link travel time. This
+# collapses ~90k per-link reconstructions per fleet to a few hundred — same
+# length-scaling logic as the bus (term_c._delta_co2_on_link).
+#
+# THE VEHICLE BELONGS IN THE KEY. Until the van size became a variable the key was
+# (v_mean, mass, seed) and that was sufficient, because cd and the frontal area
+# were module constants. They are arguments now, and two van types can land on the
+# SAME evaluation mass — tare + payload/2 is a sum, so a small van loaded and a
+# large one lightly loaded meet — at which point a cache keyed without the
+# geometry would hand the second type the first one's number, silently and
+# plausibly. rotterdam_surface_robust runs each cell in its own subprocess and
+# would never notice; sensitivity_surface runs in-process and would.
+_VAN_CO2_PER_S_CACHE: dict[tuple, float] = {}
+
+
+def _van_co2_per_second(v_mean_ms: float, van_mass_kg: float, rng_seed: int = 42,
+                        van: VanType = BASE_VAN) -> float:
     """CO2 [kg] per second of driving at this link mean speed and van mass,
     using the WLTC-reconstructed stop-and-go profile."""
-    key = (round(v_mean_ms, 2), round(van_mass_kg, 1), rng_seed)
+    key = (round(v_mean_ms, 2), round(van_mass_kg, 1), rng_seed,
+           van.cd, van.frontal_area_m2, van.rolling_resistance, van.drivetrain_eff)
     cached = _VAN_CO2_PER_S_CACHE.get(key)
     if cached is not None:
         return cached
@@ -88,8 +126,8 @@ def _van_co2_per_second(v_mean_ms: float, van_mass_kg: float, rng_seed: int = 42
     # Traction CO2 (P>0 seconds; braking P<=0 contributes 0 = diesel fuel cut-off).
     co2_traction = compute_co2_running(
         v_t, a_t, van_mass_kg,
-        cd=VAN_CD, frontal_area_m2=VAN_FRONTAL_AREA_M2,
-        rolling_coeff=VAN_ROLLING_RESISTANCE, drivetrain_eff=VAN_DRIVETRAIN_EFF,
+        cd=van.cd, frontal_area_m2=van.frontal_area_m2,
+        rolling_coeff=van.rolling_resistance, drivetrain_eff=van.drivetrain_eff,
     )
     # Idle CO2: the engine still burns fuel at true stops (v≈0). NOT applied during
     # braking (v>0, P<0): a modern diesel cuts injection on overrun. See HANDOFF §14.
@@ -135,12 +173,13 @@ def _consolidation(weight_per_unit_kg: float, van_tare_kg: float, consolidate: b
 
 
 def _mean_co2_per_van(vmean_df: pd.DataFrame, van_ids: list[str], van_mass_kg: float,
-                      rng_seed: int = 42, exclude_links=None) -> float:
+                      rng_seed: int = 42, exclude_links=None,
+                      van: VanType = BASE_VAN) -> float:
     """Average CO2 [kg] of one simulated van route at the given loaded mass."""
     if not van_ids:
         return 0.0
     return co2_van_fleet(vmean_df, van_ids, van_mass_kg, rng_seed=rng_seed,
-                         exclude_links=exclude_links) / len(van_ids)
+                         exclude_links=exclude_links, van=van) / len(van_ids)
 
 
 # ── Per-van CO2 via speed-change method ────────────────────────────────────
@@ -149,6 +188,7 @@ def _co2_for_van_on_route(
     vmean_df: pd.DataFrame,
     van_id: str,
     van_mass_kg: float,
+    van: VanType = BASE_VAN,
 ) -> float:
     """
     Compute CO2 [kg] for one van making one full trip, using v_mean per link.
@@ -175,10 +215,10 @@ def _co2_for_van_on_route(
 
     return compute_co2_running(
         v_ms, a_ms2, van_mass_kg,
-        cd=VAN_CD,
-        frontal_area_m2=VAN_FRONTAL_AREA_M2,
-        rolling_coeff=VAN_ROLLING_RESISTANCE,
-        drivetrain_eff=VAN_DRIVETRAIN_EFF,
+        cd=van.cd,
+        frontal_area_m2=van.frontal_area_m2,
+        rolling_coeff=van.rolling_resistance,
+        drivetrain_eff=van.drivetrain_eff,
     )
 
 
@@ -188,6 +228,7 @@ def co2_van_fleet(
     van_mass_kg: float,
     rng_seed: int = 42,
     exclude_links: frozenset[str] | set[str] | None = None,
+    van: VanType = BASE_VAN,
 ) -> float:
     """Sum CO2 over a list of van vehicle IDs from one MATSim run.
 
@@ -231,7 +272,7 @@ def co2_van_fleet(
             for _, row in sorted_group.iterrows():
                 tt = float(row["travel_time_s"]) if has_tt else 20.0
                 total += _van_co2_per_second(row["v_mean_ms"], van_mass_kg,
-                                             rng_seed=rng_seed) * max(1.0, tt)
+                                             rng_seed=rng_seed, van=van) * max(1.0, tt)
         else:
             link_seq = []
             for _, row in sorted_group.iterrows():
@@ -241,8 +282,8 @@ def co2_van_fleet(
             a_ms2 = speed_to_accel(v_ms)
             total += compute_co2_running(
                 v_ms, a_ms2, van_mass_kg,
-                cd=VAN_CD, frontal_area_m2=VAN_FRONTAL_AREA_M2,
-                rolling_coeff=VAN_ROLLING_RESISTANCE, drivetrain_eff=VAN_DRIVETRAIN_EFF,
+                cd=van.cd, frontal_area_m2=van.frontal_area_m2,
+                rolling_coeff=van.rolling_resistance, drivetrain_eff=van.drivetrain_eff,
             )
     return total
 
@@ -260,7 +301,33 @@ def co2_van_fleet(
 # opposite case - same trips, same links, delta-km exactly zero - which is why
 # Term C uses engine work instead. See term_c.)
 
-def van_km_on_route(vmean_df: pd.DataFrame, van_ids: list[str]) -> float:
+def _van_records(vmean_df: pd.DataFrame, van_ids: list[str],
+                 exclude_links: frozenset[str] | set[str] | None = None):
+    """The van rows the NOx side works on, with the SAME link exclusion the CO2
+    side uses.
+
+    This helper exists because the four functions below used to filter the
+    dataframe each in their own way, and only co2_van_fleet took exclude_links.
+    The day the NOx factors arrived, the kilometres behind the NOx and the
+    kilometres behind the CO2 would have counted different links. Small - the
+    deadlocked links are 30 m, so it is 0.6 % of the distance rather than the
+    56 % it was worth on the CO2, which is charged per second of engine idle -
+    but silently inconsistent. One filter, used by all of them.
+    """
+    if not van_ids:
+        return None, None
+    d = vmean_df[vmean_df["vehicle_id"].isin(set(van_ids))]
+    if exclude_links:
+        d = d[~d["link_id"].isin(frozenset(exclude_links))]
+    if d.empty:
+        return None, None
+    tt = (d["travel_time_s"].astype(float).clip(lower=1.0)
+          if "travel_time_s" in d.columns else 20.0)
+    return d, tt
+
+
+def van_km_on_route(vmean_df: pd.DataFrame, van_ids: list[str],
+                    exclude_links: frozenset[str] | set[str] | None = None) -> float:
     """
     Kilometres driven by the given vans in one run.
 
@@ -271,25 +338,24 @@ def van_km_on_route(vmean_df: pd.DataFrame, van_ids: list[str]) -> float:
     the CO2 they are supposed to accompany. It also inherits, for free, the
     standing-time subtraction parse_events applies at bus stops.
     """
-    if not van_ids:
+    d, tt = _van_records(vmean_df, van_ids, exclude_links)
+    if d is None:
         return 0.0
-    d = vmean_df[vmean_df["vehicle_id"].isin(set(van_ids))]
-    if d.empty:
-        return 0.0
-    has_tt = "travel_time_s" in d.columns
-    tt = d["travel_time_s"].astype(float).clip(lower=1.0) if has_tt else 20.0
     return float((d["v_mean_ms"].astype(float) * tt).sum() / 1000.0)
 
 
-def mean_km_per_van(vmean_df: pd.DataFrame, van_ids: list[str]) -> float:
+def mean_km_per_van(vmean_df: pd.DataFrame, van_ids: list[str],
+                    exclude_links: frozenset[str] | set[str] | None = None) -> float:
     """Average route length [km] of one simulated van. Mirrors _mean_co2_per_van."""
     if not van_ids:
         return 0.0
-    return van_km_on_route(vmean_df, van_ids) / len(van_ids)
+    return van_km_on_route(vmean_df, van_ids, exclude_links) / len(van_ids)
 
 
 def mean_nox_g_per_van(vmean_df: pd.DataFrame, van_ids: list[str],
-                       fleet_mix: dict[str, float]) -> tuple[float, int]:
+                       euro_class: str,
+                       exclude_links: frozenset[str] | set[str] | None = None,
+                       ) -> tuple[float, int]:
     """
     Average NOx [g] of one simulated van route, at its per-link mean speeds.
 
@@ -298,37 +364,40 @@ def mean_nox_g_per_van(vmean_df: pd.DataFrame, van_ids: list[str],
     multiplier on a tour count. That costs nothing: the speeds are already in
     the dataframe.
 
+    The curve is the EMEP/EEA Tier 3 one for a diesel N1 Class III - the class
+    the Transit Custom of this model belongs to. It is a REAL-WORLD urban curve,
+    which matters for what it already contains: idling at lights and at delivery
+    stops is inside it, because the measurements behind it included standing
+    time. Nothing may be added on top for van idle, and the CO2 side's separate
+    idle charge has no NOx counterpart here by design, not by omission.
+
     Returns (grams, n_links_outside_published_speed_range). The second number is
-    not decoration - a Tier 2 curve is only fitted over the speeds its source
-    states, and a corridor that spends most of its time below that range is a
-    caveat that belongs in the table caption.
+    not decoration - a fitted curve is only valid over the speeds its source
+    states, and a corridor that spends its time below that range is a caveat
+    that belongs in the table caption.
     """
-    from euro_factors import VAN_NOX, mix_factor
+    from euro_factors import van_nox
 
-    if not van_ids:
-        return 0.0, 0
-    d = vmean_df[vmean_df["vehicle_id"].isin(set(van_ids))]
-    if d.empty:
+    d, tt = _van_records(vmean_df, van_ids, exclude_links)
+    if d is None:
         return 0.0, 0
 
-    has_tt = "travel_time_s" in d.columns
-    tt = d["travel_time_s"].astype(float).clip(lower=1.0) if has_tt else 20.0
+    curve = van_nox(euro_class)
     v_ms = d["v_mean_ms"].astype(float)
     km = (v_ms * tt) / 1000.0
     v_kmh = v_ms * 3.6
 
-    before = sum(VAN_NOX[c].n_clamped for c in fleet_mix)
-    grams = float(sum(mix_factor(VAN_NOX, fleet_mix, v) * k
-                      for v, k in zip(v_kmh, km)))
-    after = sum(VAN_NOX[c].n_clamped for c in fleet_mix)
-    return grams / len(van_ids), after - before
+    before = curve.n_clamped
+    grams = float(sum(curve.at(v) * k for v, k in zip(v_kmh, km)))
+    return grams / len(van_ids), curve.n_clamped - before
 
 
 def compute_term_b_nox(
     baseline_vmean_df: pd.DataFrame,
     scenario_vmean_df: pd.DataFrame,
     term_b_result: dict,
-    fleet_mix: dict[str, float],
+    euro_class: str,
+    exclude_links: frozenset[str] | set[str] | None = None,
 ) -> dict:
     """
     Term B in NOx: the tailpipe NOx of the van tours no longer driven.
@@ -341,24 +410,29 @@ def compute_term_b_nox(
       Component 2  tours_scenario x (one van's NOx under SCENARIO congestion)
       Term B NOx   Component 1 - Component 2, clamped at 0 like the CO2
 
-    Idle NOx at the delivery stops is NOT included. The CO2 side charges it from
-    a litres-per-second idle rate, and there is no defensible way to turn that
-    into NOx: idle NOx depends on whether the aftertreatment is above light-off,
-    which this model does not track. Report Term B NOx as running-only and say
-    so - it makes the van saving slightly CONSERVATIVE, which is the safe
-    direction for a saving.
+    NO SEPARATE IDLE TERM, AND THAT IS NOT AN OMISSION. The CO2 side charges van
+    idle from a litres-per-second rate. The NOx side must not add anything
+    equivalent, because the EMEP/EEA curve is fitted to real-world urban driving
+    whose measurements already contain standing at lights and at stops: the
+    idling is inside the g/km. An earlier version of this docstring claimed the
+    opposite - that idle was excluded and the saving therefore conservative -
+    and that was wrong in both directions. It is neither excluded nor a
+    conservatism; it is counted once, inside the factor.
 
-    Pass `fleet_mix` as {Euro class: share}, shares summing to 1.
+    `exclude_links` is passed straight through to the shared record filter, so
+    the kilometres behind the NOx count exactly the links the CO2 counts.
     """
     van_ids_b = [v for v in baseline_vmean_df["vehicle_id"].unique()
                  if v.startswith(VAN_ID_PREFIX)]
     van_ids_s = [v for v in scenario_vmean_df["vehicle_id"].unique()
                  if v.startswith(VAN_ID_PREFIX)]
 
-    nox_b, clamp_b = mean_nox_g_per_van(baseline_vmean_df, van_ids_b, fleet_mix)
-    nox_s, clamp_s = mean_nox_g_per_van(scenario_vmean_df, van_ids_s, fleet_mix)
-    km_b = mean_km_per_van(baseline_vmean_df, van_ids_b)
-    km_s = mean_km_per_van(scenario_vmean_df, van_ids_s)
+    nox_b, clamp_b = mean_nox_g_per_van(baseline_vmean_df, van_ids_b,
+                                        euro_class, exclude_links)
+    nox_s, clamp_s = mean_nox_g_per_van(scenario_vmean_df, van_ids_s,
+                                        euro_class, exclude_links)
+    km_b = mean_km_per_van(baseline_vmean_df, van_ids_b, exclude_links)
+    km_s = mean_km_per_van(scenario_vmean_df, van_ids_s, exclude_links)
 
     n_b = term_b_result["tours_baseline"]
     n_s = term_b_result["tours_scenario"]
@@ -372,9 +446,10 @@ def compute_term_b_nox(
         "component2_km": km_s * n_s,
         "term_b_km": km_b * n_b - km_s * n_s,
         "mean_km_per_tour": km_b,
-        "fleet_mix": dict(fleet_mix),
+        "mean_nox_g_per_tour": nox_b,
+        "euro_class": euro_class,
         "n_links_outside_ef_speed_range": clamp_b + clamp_s,
-        "idle_nox_included": False,
+        "idle_inside_factor": True,
     }
 
 
@@ -393,6 +468,7 @@ def compute_component1(
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
     exclude_links=None,
+    van: VanType | None = None,
 ) -> tuple[float, bool]:
     """
     CO2 that all N_total parcels' vans would have emitted under baseline congestion.
@@ -407,6 +483,8 @@ def compute_component1(
 
     Returns (co2_kg, used_proxy).
     """
+    van_tare_kg, payload_capacity_kg, parcels_per_tour_max, veh = _resolve_van(
+        van, van_tare_kg, payload_capacity_kg, parcels_per_tour_max)
     parcels_per_tour, van_mass = _consolidation(
         weight_per_unit_kg, van_tare_kg, consolidate,
         payload_capacity_kg, parcels_per_tour_max, load_factor)
@@ -426,7 +504,8 @@ def compute_component1(
         # the loaded mass, then multiply by the number of tours (consolidated) or
         # the full parcel count (historical, parcels_per_tour=1 → n_tours=N).
         mean_per_van = _mean_co2_per_van(baseline_vmean_df, van_ids, van_mass,
-                                         rng_seed=rng_seed, exclude_links=exclude_links)
+                                         rng_seed=rng_seed, exclude_links=exclude_links,
+                                         van=veh)
         return mean_per_van * n_tours + stop_idle, False
     else:
         # Proxy: no vans in baseline — use background car v_mean as approximation
@@ -440,8 +519,8 @@ def compute_component1(
         a_ms2 = speed_to_accel(v_ms)
         co2_per_van = compute_co2_running(
             v_ms, a_ms2, van_mass,
-            cd=VAN_CD, frontal_area_m2=VAN_FRONTAL_AREA_M2,
-            rolling_coeff=VAN_ROLLING_RESISTANCE, drivetrain_eff=VAN_DRIVETRAIN_EFF,
+            cd=veh.cd, frontal_area_m2=veh.frontal_area_m2,
+            rolling_coeff=veh.rolling_resistance, drivetrain_eff=veh.drivetrain_eff,
         )
         return co2_per_van * n_tours + stop_idle, True
 
@@ -462,6 +541,7 @@ def compute_component2(
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
     exclude_links=None,
+    van: VanType | None = None,
 ) -> float:
     """
     CO2 emitted by the backup vans actually present in the scenario run.
@@ -470,6 +550,8 @@ def compute_component2(
     tours (or (1−alpha)·N single trips in the historical design). Backup van v_mean
     is taken directly from the scenario events.xml.
     """
+    van_tare_kg, payload_capacity_kg, parcels_per_tour_max, veh = _resolve_van(
+        van, van_tare_kg, payload_capacity_kg, parcels_per_tour_max)
     parcels_per_tour, van_mass = _consolidation(
         weight_per_unit_kg, van_tare_kg, consolidate,
         payload_capacity_kg, parcels_per_tour_max, load_factor)
@@ -489,7 +571,8 @@ def compute_component2(
     # then scale to the number of consolidated tours, plus the per-tour delivery-stop
     # idle at the n_pickup_stops corridor lockers (bracketed; HANDOFF §3.4).
     mean_per_van = _mean_co2_per_van(scenario_vmean_df, van_ids, van_mass,
-                                     rng_seed=rng_seed, exclude_links=exclude_links)
+                                     rng_seed=rng_seed, exclude_links=exclude_links,
+                                     van=veh)
     stop_idle = n_tours * compute_co2_idle(van_stop_idle_s * n_pickup_stops,
                                            VAN_IDLE_FUEL_RATE_L_PER_S)
     return mean_per_van * n_tours + stop_idle
@@ -512,6 +595,7 @@ def compute_term_b(
     load_factor: float = VAN_LOAD_FACTOR,
     rng_seed: int = 42,
     exclude_links: frozenset[str] | set[str] | None = None,
+    van: VanType | None = None,
 ) -> dict:
     """
     Term B = Component1 − Component2 [kg CO2 saved per day by removing vans].
@@ -530,6 +614,8 @@ def compute_term_b(
         'tours_scenario': int,            ⌈(1-alpha)·N / C_van⌉
       }
     """
+    van_tare_kg, payload_capacity_kg, parcels_per_tour_max, veh = _resolve_van(
+        van, van_tare_kg, payload_capacity_kg, parcels_per_tour_max)
     parcels_per_tour, _ = _consolidation(
         van_payload_kg, van_tare_kg, consolidate,
         payload_capacity_kg, parcels_per_tour_max, load_factor)
@@ -538,15 +624,41 @@ def compute_term_b(
                       if (1 - alpha) * n_total_vans > 0 else 0)
 
     def _both(excl):
+        # `van`, NOT the resolved `veh`. The components resolve for themselves, and
+        # handing them a VanType would make them ignore the loose van_tare_kg /
+        # payload_capacity_kg / parcels_per_tour_max arguments — which is how the
+        # van-capacity screening sweeps consolidation capacity on its own
+        # (screening_analysis.py passes van_payload_capacity_kg with no van type).
+        # Passing veh here silently priced every one of those cells as the base van.
         a, proxy = compute_component1(
             baseline_vmean_df, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
             payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
-            load_factor, rng_seed, excl)
+            load_factor, rng_seed, excl, van)
         b = compute_component2(
             scenario_vmean_df, alpha, n_total_vans, van_payload_kg, van_tare_kg, consolidate,
             payload_capacity_kg, parcels_per_tour_max, n_pickup_stops, van_stop_idle_s,
-            load_factor, rng_seed, excl)
+            load_factor, rng_seed, excl, van)
         return a, b, proxy
+
+    # How many van vehicles the two runs ACTUALLY contain, as opposed to how many
+    # the consolidation formula says they should. The two are not the same
+    # quantity and nothing else in the pipeline compares them: the components
+    # average the CO2 over whatever backup_van_* ids they find and multiply that
+    # mean by the FORMULA's tour count, so a run carrying seven vans analysed as
+    # five tours returns a perfectly plausible wrong number, silently. That is the
+    # failure mode of a stale warm-plans file (the generator reuses one whenever
+    # the name already exists), and until these two counts came out there was no
+    # signal anywhere that it had happened. Reported, not enforced: the proxy path
+    # legitimately has zero vans in the baseline, and a caller sweeping N knows
+    # what it expects and can check.
+    def _n_vans(df):
+        if df.empty:
+            return 0
+        ids = df["vehicle_id"].unique()
+        return sum(1 for vid in ids if str(vid).startswith(VAN_ID_PREFIX))
+
+    n_obs_base = _n_vans(baseline_vmean_df)
+    n_obs_scen = _n_vans(scenario_vmean_df)
 
     c1, c2, used_proxy = _both(None)
     term_b = max(0.0, c1 - c2)  # clamp at 0: savings cannot be negative by definition
@@ -575,8 +687,21 @@ def compute_term_b(
         "parcels_per_tour": parcels_per_tour,
         "tours_baseline": tours_baseline,
         "tours_scenario": tours_scenario,
+        # What the runs actually contained, against the two above, which are what
+        # the formula asked for. A caller that knows what it inserted should
+        # compare them; they are the only evidence in the pipeline that the
+        # simulation and the accounting are talking about the same fleet.
+        "n_vans_observed_baseline": n_obs_base,
+        "n_vans_observed_scenario": n_obs_scen,
         "van_stop_idle_s": van_stop_idle_s,
         "van_load_factor": load_factor,
+        # The vehicle these numbers describe. Carried out so it lands in the CSV:
+        # a van-size sweep whose rows do not say which van they are is unreadable
+        # a week later.
+        "van_type": veh.name,
+        "van_tare_kg": van_tare_kg,
+        "van_payload_capacity_kg": payload_capacity_kg,
+        "van_frontal_area_m2": veh.frontal_area_m2,
     }
 
 

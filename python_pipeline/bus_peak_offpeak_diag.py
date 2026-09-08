@@ -23,13 +23,14 @@ import pandas as pd
 
 from parse_events import load_link_attributes, parse_events
 from scenario_presets import _PROJECT_ROOT, get_preset
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
 SEED = "4711"
 
 
 def load_scenario(regime: str, preset):
     run_dir = Path(preset.output_base_dir) / f"alpha000_{regime}_medium_seed{SEED}"
-    events = run_dir / "MRDH_10pct.output_events.xml.zst"
+    events = run_path(run_dir, "output_events.xml.zst")
     network = _PROJECT_ROOT / preset.network_file
     corridor = frozenset(
         line.strip()

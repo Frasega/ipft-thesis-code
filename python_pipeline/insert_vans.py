@@ -416,7 +416,7 @@ def _create_offpeak_base_streaming(
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description="Insert backup van agents into plans.xml(.gz)")
-    p.add_argument("--scenario", default="toy", choices=["toy", "rotterdam"],
+    p.add_argument("--scenario", default="toy",
                    help="Preset for hub/terminal links, coordinates, van mode and "
                         "departure spread (default: toy)")
     p.add_argument("--base-plans", default=None,

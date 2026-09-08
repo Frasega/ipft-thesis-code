@@ -174,6 +174,156 @@ def c_van(weight_per_unit_kg: float,
     return int(min(parcels_per_tour_max,
                    payload_capacity_kg // weight_per_unit_kg))
 
+
+# ── Van SIZE as one object, not four constants (2026-08-26) ───────────────
+# The van-size sensitivity (Chapter 4, tab:campaign) asks what changes if the
+# operator runs a different vehicle. Answering it by moving VAN_PAYLOAD_CAPACITY_KG
+# alone would test the SAME van with a bigger cargo bay, which is not a different
+# van: a smaller vehicle is lighter, narrower and lower as well as less capacious.
+# Tare, payload, frontal area and drag therefore travel together in one object, so
+# a caller cannot vary one and forget the others.
+#
+# The parcel cap moves with the size for the same reason: the bay is a VOLUME, and
+# volume scales with the vehicle. Holding it at 150 for every size would make the
+# light regime identical across all three by pure arithmetic — C_van(3 kg) =
+# min(150, payload/3) = 150 for any payload above 450 kg — so the light row would
+# be flat by construction and say nothing.
+#
+# `source` is the citation. A type whose source is None CANNOT be used: van_type()
+# raises instead of returning it, the same rule euro_factors.py applies to the
+# Euro-class emission factors, so an invented number cannot reach the thesis by
+# being convenient.
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class VanType:
+    """One delivery van, described completely enough to emit and to load."""
+    name: str
+    tare_kg: float
+    payload_capacity_kg: float
+    parcels_per_tour_max: int
+    frontal_area_m2: float
+    cd: float
+    rolling_resistance: float
+    drivetrain_eff: float
+    source: str | None          # None = not sourced yet -> refused by van_type()
+
+    def c_van(self, weight_per_unit_kg: float) -> int:
+        return c_van(weight_per_unit_kg, self.payload_capacity_kg,
+                     self.parcels_per_tour_max)
+
+
+class VanTypeNotSourced(RuntimeError):
+    """A van type was requested whose specification has no citation yet."""
+
+
+VAN_TYPES: dict[str, VanType] = {
+    # The headline vehicle. Every value is the module constant above, so
+    # van_type("base") reproduces the published numbers exactly.
+    "base": VanType(
+        name="base",
+        tare_kg=VAN_TARE_KG,
+        payload_capacity_kg=VAN_PAYLOAD_CAPACITY_KG,
+        parcels_per_tour_max=VAN_PARCELS_PER_TOUR_MAX,
+        frontal_area_m2=VAN_FRONTAL_AREA_M2,
+        cd=VAN_CD,
+        rolling_resistance=VAN_ROLLING_RESISTANCE,
+        drivetrain_eff=VAN_DRIVETRAIN_EFF,
+        source="Ford Transit Custom L2 panel van — see the module constants above",
+    ),
+    # PROPOSED, NOT YET SOURCED. The figures below are the plausible class values
+    # a compact city van (VW Caddy Cargo Maxi / Ford Transit Connect L2) and a
+    # 3.5 t box van (Ford Transit L4H3 / Mercedes Sprinter) sit at, and they are
+    # here so the design can be read and discussed. They are NOT usable until each
+    # carries its citation: fill in `source` and only then will van_type() return
+    # them.
+    #
+    # WHICH FIGURES ACTUALLY HAVE TO BE SOURCED, measured rather than assumed.
+    # Varying one property at a time on the corridor's real mean speed (17.5 km/h
+    # once the deadlocked links are excluded) moves the CO2 per second of driving by:
+    #
+    #     mass          1,975 -> 3,100 kg    35.0 %
+    #     frontal area    3.0 -> 5.0 m2       3.0 %
+    #     drag Cd        0.33 -> 0.40         1.1 %
+    #
+    # Urban speeds put almost no air through the front of a van: the result is a
+    # MASS and TOUR-COUNT result, not an aerodynamic one. So tare and payload are
+    # the two figures that must come from a spec sheet — they carry the 35 % and
+    # they set C_van, hence the number of tours. Frontal area is derived from the
+    # published width and height, the same convention already used for the base van
+    # (1.99 m x ~1.92 m -> 3.8 m2), so it needs no new kind of source.
+    #
+    # Cd, rolling resistance and drivetrain efficiency are held at the base values
+    # on purpose. For rolling resistance and drivetrain that is because they are
+    # class properties of a diesel LCV rather than of a model. For Cd it is a
+    # trade: a per-model published Cd rarely exists, and inventing one would add an
+    # unsourced number to buy 1.1 %. Declare it in the thesis rather than model it.
+    # All three are Ford Transit family, deliberately: the base van already is one,
+    # so the three sizes come from one maker publishing to one measurement
+    # convention, and the comparison is between vehicles rather than between
+    # sources. Tare and payload are taken as a MATCHED PAIR from a single named
+    # variant, never mixed across trims — a kerb weight from one engine and a
+    # payload from another would describe a van that does not exist.
+    #
+    # PARCEL CAP: not invented per size. The base van's 150 parcels/tour is the
+    # literature figure (Boysen et al. 2021; Spectrum last-mile survey, 150-200),
+    # and it is a SPACE cap, so it is carried to the other two in proportion to
+    # published load volume: 150 x (volume / 6.8 m3). That makes the cap a declared
+    # derivation from one cited number instead of three guesses, and it is what
+    # stops the light regime from coming out identical for every size.
+    "small": VanType(
+        name="small",
+        # Transit Connect L2 210 1.5 EcoBlue 75 PS: kerb 1,623 kg with 685 kg payload.
+        tare_kg=1623.0,
+        payload_capacity_kg=685.0,
+        parcels_per_tour_max=79,          # 150 x 3.6/6.8 m3
+        frontal_area_m2=3.4,              # 1.835 m width (excl. mirrors) x 1.862 m height
+        cd=VAN_CD,                        # held: see the note above, 1.1% at 17.5 km/h
+        rolling_resistance=VAN_ROLLING_RESISTANCE,
+        drivetrain_eff=VAN_DRIVETRAIN_EFF,
+        source="Ford Transit Connect L2 panel van, 1.5 EcoBlue 75 PS "
+               "(ultimatespecs.com kerb 1,623 kg; parkers.co.uk payload 685 kg; "
+               "auto-data.net 1,835 x 1,862 mm; load volume 3.6 m3)",
+    ),
+    "large": VanType(
+        name="large",
+        # Transit 350 L3 H2 2.0 TDCi 130 PS RWD: kerb 2,237 kg with 1,263 kg payload.
+        tare_kg=2237.0,
+        payload_capacity_kg=1263.0,
+        parcels_per_tour_max=225,         # 150 x 10.2/6.8 m3
+        frontal_area_m2=5.1,              # 2.059 m width (excl. mirrors) x ~2.49 m H2 height
+        cd=VAN_CD,
+        rolling_resistance=VAN_ROLLING_RESISTANCE,
+        drivetrain_eff=VAN_DRIVETRAIN_EFF,
+        source="Ford Transit 350 L3 H2 2.0 TDCi 130 PS RWD "
+               "(dawsongroupvans.co.uk spec sheet: kerb 2,237 kg, payload 1,263 kg, "
+               "10.2 m3; parkers.co.uk H2 exterior height 2,443-2,533 mm; "
+               "vansdirect.co.uk body width 2,059 mm excl. mirrors)",
+    ),
+}
+
+
+def van_type(name: str, allow_unsourced: bool = False) -> VanType:
+    """The van type by name, refusing any specification that has no citation.
+
+    allow_unsourced=True is for showing a design before it is committed to — a
+    dry run that prints what the campaign would look like. It must never be set
+    on a path that writes inputs or produces a number.
+    """
+    try:
+        vt = VAN_TYPES[name]
+    except KeyError:
+        raise ValueError(f"unknown van type {name!r} "
+                         f"(have: {', '.join(sorted(VAN_TYPES))})") from None
+    if vt.source is None and not allow_unsourced:
+        raise VanTypeNotSourced(
+            f"van type {name!r} has no source. Its tare, payload, frontal area "
+            f"and drag are placeholders, and a placeholder must not reach a result: "
+            f"fill in VAN_TYPES[{name!r}].source in parameters.py with the "
+            f"specification it comes from, then run again.")
+    return vt
+
 # ── Passengers ────────────────────────────────────────────────────────────
 AVG_PERSON_WEIGHT_KG = 75               # EN 13035-1 / NEN-EN 12831 standard
 

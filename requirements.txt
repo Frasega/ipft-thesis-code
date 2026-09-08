@@ -1,9 +1,14 @@
 # Python dependencies of the IPFT pipeline.
 # Versions are the ones the reported runs were produced with (Python 3.13.14);
 # install with:  pip install -r requirements.txt
+#
+# Everything here has a wheel for CPython 3.13 on Linux, so this file installs on a
+# cluster without a compiler. The one dependency that does NOT is kept apart in
+# requirements-optional.txt, because nothing the campaign runs needs it and a failed
+# build of it would otherwise take the whole install down with it.
 
 pandas==2.2.3        # every post-processing script
 numpy==2.2.3         # kinematic reconstruction and the emission formula
 zstandard==0.25.0    # MATSim writes output_events.xml.zst; the parser streams it
 matplotlib==3.10.1   # plot_convergence.py, plot_corridor_map.py only
-wltp==0.1.2a0        # official WLTC class-3b cycle, used to build the van driving cycles
+PyYAML==6.0.2        # config/*.yaml — the scenario, campaign and experiment inputs

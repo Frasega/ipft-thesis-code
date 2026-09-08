@@ -75,6 +75,7 @@ import zstandard
 sys.path.insert(0, str(Path(__file__).parent))
 
 from scenario_presets import OUTPUT_ROOT, get_preset
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
 MEDIAN_SPEED_KMH_MAX = 1.0
 SPEED_RATIO_MAX = 0.02
@@ -167,8 +168,8 @@ def main() -> None:
     root = Path(__file__).resolve().parent.parent
     base = OUTPUT_ROOT / ("ipft_rotterdam_longbase"
                           + ("_offpeak" if args.congestion == "offpeak" else ""))
-    events = base / "MRDH_10pct.output_events.xml.zst"
-    links_csv = base / "MRDH_10pct.output_links.csv.zst"
+    events = run_path(base, "output_events.xml.zst")
+    links_csv = run_path(base, "output_links.csv.zst")
     for p in (events, links_csv):
         if not p.exists():
             raise FileNotFoundError(f"{p} not found — run the {args.congestion} LONGBASE first")

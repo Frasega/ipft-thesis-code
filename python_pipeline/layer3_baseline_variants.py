@@ -43,10 +43,10 @@ import pandas as pd
 from corridor_metrics import load_corridor_links
 from parse_events import parse_events
 from parameters import VAN_LOAD_FACTOR, VAN_STOP_IDLE_S, WEIGHT_REGIMES
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 from term_b import compute_component1
 
-RUNS = Path("D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs")
+RUNS = OUTPUT_ROOT / "ipft_rotterdam_dwell_blocking_runs"
 ROOT = PIPE.parent
 OUT = ROOT / "output" / "layer3_baseline_variants.csv"
 HEADLINE = ROOT / "output" / "sensitivity_rotterdam_dwell_blocking" / "results_long.csv"

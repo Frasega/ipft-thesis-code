@@ -8,9 +8,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from run_pipeline import run_scenario
 from scenario_presets import get_preset
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
 ROOT = Path(__file__).parent.parent
-EVENTS = ROOT / "output" / "ipft_rotterdam_smoke" / "MRDH_10pct.output_events.xml.zst"
+EVENTS = run_path(ROOT / "output" / "ipft_rotterdam_smoke", "output_events.xml.zst")
 
 p = get_preset("rotterdam")
 res = run_scenario(
@@ -27,7 +28,13 @@ res = run_scenario(
     transit_prefixes=p.transit_prefixes,
     bus_id_allowlist=p.term_c_bus_ids,
     hb_route_prefixes=p.hb_route_prefixes,
-    pickup_link_ids=p.pickup_link_ids,
+    # NOTE: no pickup_link_ids. run_scenario does not take one and does not forward one
+    # to compute_term_c, so Term C spaces the pickup stops evenly along the link
+    # sequence (build_freight_remaining_uniform) instead of using the line's declared
+    # stop links. This script asked for the declared ones and had been failing with a
+    # TypeError ever since. Passing them here and not in the campaign would make the
+    # smoke check test something the campaign does not do, which is worse than the gap
+    # itself - so it matches the campaign, and the gap is written down instead.
     corridor_links_file=str(ROOT / p.corridor_links_file),
 )
 print("\n=== result keys of interest ===")

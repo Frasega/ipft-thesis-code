@@ -11,9 +11,11 @@ cargo allowance binds, never the gross weight), but the number did.
 import collections
 import xml.etree.ElementTree as ET
 import zstandard as zstd
+from scenario_presets import OUTPUT_ROOT  # run output location: config/machine.yaml
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
-BASE = "D:/TesiOutputs/ipft_rotterdam_longbase"
-EVENTS = f"{BASE}/MRDH_10pct.output_events.xml.zst"
+BASE = str(OUTPUT_ROOT / "ipft_rotterdam_longbase")
+EVENTS = str(run_path(BASE, "output_events.xml.zst"))
 SC = "scenarios/ipft_rotterdam"
 SR = 0.10
 

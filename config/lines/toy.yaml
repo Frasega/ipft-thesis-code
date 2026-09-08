@@ -1,0 +1,109 @@
+# The sandbox corridor - a synthetic east-west line on the grid network.
+#
+# There is no real bus line here, so several fields that are precise facts about a
+# real corridor are conventions instead, and are marked as such below. That is the
+# honest difference between this file and the two Rotterdam ones: the sandbox exists
+# to exercise the machinery, not to describe a place.
+
+schema: ipft-line/1
+
+name: toy
+city: toy
+
+line_tag:
+  value: ""
+  note: The sandbox has one corridor, so nothing needs disambiguating.
+
+transit_line_id:
+  value: ""
+  note: >
+    Empty: the sandbox timetable has no line whose id the route selection needs, and
+    the freight-carrying vehicles are found by prefix instead - see hb_route_prefixes.
+
+hub_stop_link:
+  value: ""
+  note: Empty for the same reason as transit_line_id.
+
+vehicle_ids_file:
+  value: null
+  note: >
+    None. The sandbox has no roster of real departures to name, so Term C selects its
+    representative bus by prefix. On any real line this must be a file: a prefix would
+    match the return direction and put the load profile in backwards.
+
+vehicle_ids_expected: null
+
+bus_trips_per_day:
+  value: ${parameters.BUS_TRIPS_PER_DAY}
+  note: >
+    Read from parameters.py rather than copied, so the sandbox F cannot drift from the
+    constant that documents it. Resolves to 60, confirmed against the RET line 30
+    timetable as a plausible backbone-line frequency.
+
+n_pickup_stops:
+  value: 5
+  note: A convention, not a count of anything - the grid has no stop locations.
+
+pickup_link_ids:
+  value: null
+  note: >
+    None: there are no real stop locations, so the stops are spaced evenly along the
+    link sequence. This is exactly the approximation that had to be abandoned on
+    Rotterdam, where it invented a delivery in the middle of a river crossing.
+
+van_locker_stops:
+  value: []
+  note: Empty - one direct hub-to-terminal leg, no locker detour.
+
+n_freight_units_sim:
+  value: ${parameters.N_FREIGHT_UNITS_TOY}
+  note: >
+    Resolves to 2,000 - about 10% of the 20,000 background agents, the literature share
+    for urban freight commercial-vehicle traffic. Below roughly 5% the congestion signal
+    is dominated by run-to-run seed noise.
+
+hub_link:
+  value: H_5_0_H_5_1
+  note: >
+    The west end of the synthetic east-west corridor. No depot substitution is needed
+    here, unlike Rotterdam: the grid has no bus-only platform links for a van to get
+    stuck behind.
+
+terminal_link: B_5_14_B_5_15
+hub_xy: [100.0, 1000.0]
+terminal_xy: [10400.0, 1000.0]
+
+van_mode:
+  value: freight
+  note: >
+    The sandbox config defines a separate freight mode with its own scoring, so the
+    vans can be their own mode here. Rotterdam cannot do this - a calibrated city
+    config has no scoring for a mode its calibration never saw - and sends vans as
+    cars instead.
+
+van_departure: "07:00:00"
+
+van_spread_minutes:
+  value: 0.0
+  note: >
+    All vans depart together. Harmless on the sandbox, where the question is whether
+    the machinery works; on Rotterdam the departures are spread over two hours and the
+    grid has to be held fixed between baseline and scenario.
+
+generated_dir: scenarios/ipft_toy/generated
+output_base_dir: ${machine.output_root}/ipft_toy_runs
+
+corridor_links_file:
+  value: null
+  note: >
+    None: on the sandbox Term A is measured region-wide rather than on a corridor,
+    because the whole network is small enough to keep in memory and there is no
+    background traffic elsewhere to dilute the signal.
+
+bus_stop_links_file: null
+
+hb_route_prefixes:
+  value: ["EW_"]
+  note: >
+    The east-west corridor vehicles - the ones carrying freight. Used only because
+    vehicle_ids_file is absent.

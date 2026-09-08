@@ -1,13 +1,17 @@
 """Campiona i primi ~200MB decompressi del file eventi smoke e conta i tipi."""
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 
 import zstandard as zstd
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PATH = (_PROJECT_ROOT / "output" / "ipft_rotterdam_smoke" / "ITERS" / "it.0"
-        / "MRDH_10pct.0.events.xml.zst")
+sys.path.insert(0, str(_PROJECT_ROOT / "python_pipeline"))
+from config.paths import run_path  # resolves the optional MATSim runId prefix
+
+PATH = run_path(_PROJECT_ROOT / "output" / "ipft_rotterdam_smoke" / "ITERS" / "it.0",
+                "0.events.xml.zst")
 
 LIMIT = 200_000_000  # bytes decompressi
 types = Counter()

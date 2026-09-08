@@ -8,6 +8,11 @@ Extracts from the compressed event stream:
     the driver and is counted separately, not as a passenger)
   - per-stop standing time per bus: from VehicleArrivesAtFacility /
     VehicleDepartsAtFacility (tracked buses only)
+  - passenger LEGS on the tracked buses: one row per boarding->alighting pair,
+    with the wait that preceded it, from waitingForPt / PersonEntersPtVehicle /
+    PersonLeavesPtVehicle. This is what the passenger travel-time KPI is built
+    on: the counts above say how many are aboard, the legs say how long each
+    person waited and rode.
 
 Bus V_mean excludes standing time. For tracked buses, the standing time at a
 stop facility (departure − arrival) is subtracted from the link travel time and
@@ -24,7 +29,19 @@ The per-(vehicle, link) standing totals are exposed on the returned DataFrame as
 (attrs, not a third return value, so every existing caller keeps working).
 Term C uses scenario−baseline standing as the MEASURED extra freight idle.
 
-Never loads the full XML into memory. Uses zstandard streaming + iterparse + elem.clear().
+Two more ride on attrs for the same reason:
+    vmean_df.attrs["pax_legs"]    DataFrame, one row per passenger leg
+    vmean_df.attrs["stop_delays"] {vehicle_id: [(link, t_arr, t_dep, delay_arr_s,
+                                                 delay_dep_s), ...]}
+The delays are MATSim's own schedule deviation. With awaitDeparture=true a bus
+cannot leave before its timetabled time, so the departure delay is what actually
+reaches the passengers downstream, while the freight dwell reaches whoever is
+already aboard in full. The two are different numbers and the pair is what makes
+the "surviving delay" checkable instead of assumed.
+
+Never loads the full XML into memory: zstandard streaming + iterparse, with
+both the event AND the root cleared (clearing only the event leaves the root
+holding one empty node per event, which is what used to make a cell cost GBs).
 
 Usage:
     from parse_events import parse_events
@@ -170,6 +187,10 @@ def parse_events(
     pax_timeline : dict
         {bus_vehicle_id: list of (time_s, cumulative_count)}
         Sorted by time. Use get_passengers_at_time() to query.
+
+    Also on vmean_df.attrs: "stop_standing", "pax_legs" (one row per passenger
+    leg: person_id, vehicle_id, transit_line, transit_route, t_wait_start_s,
+    t_board_s, t_alight_s, wait_s, invehicle_s) and "stop_delays".
     """
     if bus_prefixes is None:
         bus_prefixes = BUS_ID_PREFIXES
@@ -205,6 +226,8 @@ def parse_events(
         # corruption if a future caller does (e.g. sorting/filtering in place).
         out_df = cached_df.copy()
         out_df.attrs["stop_standing"] = cached_df.attrs.get("stop_standing", {})
+        out_df.attrs["pax_legs"] = cached_df.attrs.get("pax_legs")
+        out_df.attrs["stop_delays"] = cached_df.attrs.get("stop_delays", {})
         return out_df, {k: list(v) for k, v in cached_pax.items()}
 
     link_lengths, link_freespeeds = load_link_attributes(network_xml_path)
@@ -216,7 +239,15 @@ def parse_events(
 
     # Stop-facility standing (tracked buses): the facility id embeds the link
     # ("2685255.link:448306"); ids without "link:" are skipped (toy).
-    open_stop: dict = {}                       # {vehicle_id: (link_id, t_arrival)}
+    open_stop: dict = {}                       # {vehicle_id: (link_id, t_arr, delay_arr)}
+
+    # Passenger legs on the tracked buses. waitingForPt carries the person but
+    # NOT the vehicle (the agent does not yet know which departure it will
+    # catch), so the wait is opened by person and closed at boarding time.
+    wait_start: dict = {}      # {person_id: t of the last waitingForPt}
+    open_leg: dict = {}        # {person_id: (veh, line, route, t_wait, t_board)}
+    pax_legs: list = []        # closed legs, one row each
+    stop_delays: dict = defaultdict(list)  # {veh: [(link, t_arr, t_dep, d_arr, d_dep)]}
     stop_intervals: dict = defaultdict(list)   # {(veh, link): [(t_arr, t_dep), ...]}
     stop_standing: dict = defaultdict(lambda: defaultdict(float))  # veh -> link -> s
 
@@ -233,14 +264,27 @@ def parse_events(
     n_zero_dt = 0
     n_overspeed = 0
     n_pax_board = 0      # PersonEntersPtVehicle on tracked buses (real passengers)
+    n_leg_no_wait = 0    # boardings with no waitingForPt seen before them
+    n_leg_unclosed = 0   # legs still open when the stream ended
     n_driver_board = 0   # PersonEntersVehicle on tracked buses (drivers, not counted)
     n_stops_matched = 0  # facility stops whose standing was subtracted from a link
     total_standing_s = 0.0
 
     with open_events_stream(events_zst_path) as reader:
-            for _, elem in ET.iterparse(reader, events=["end"]):
+            # elem.clear() empties each event but the ROOT keeps a reference to
+            # every one of them, so a 50M-event file leaves 50M empty nodes
+            # behind — gigabytes that have nothing to do with what we keep.
+            # Holding the root and clearing it too is what makes the working set
+            # flat instead of proportional to the file. "start" events are asked
+            # for only to get that root reference, and are skipped immediately.
+            context = ET.iterparse(reader, events=["start", "end"])
+            _, root = next(context)
+            for _ev, elem in context:
+                if _ev != "end":
+                    continue
                 if elem.tag != "event":
                     elem.clear()
+                    root.clear()
                     continue
 
                 etype = elem.get("type")
@@ -330,18 +374,44 @@ def parse_events(
                 # The plain PersonEntersVehicle on a transit vehicle is the DRIVER:
                 # it is deliberately NOT counted here, because the driver mass is
                 # added explicitly as +1 occupant in feasibility.compute_alpha_max.
+                elif etype == "waitingForPt":
+                    pid = elem.get("person") or elem.get("agent")
+                    if pid:
+                        # Latest wins: a person who is still waiting when the
+                        # next departure comes has only one open wait.
+                        wait_start[pid] = t
+
                 elif etype == "PersonEntersPtVehicle":
                     vid = elem.get("vehicle")
+                    pid = elem.get("person")
+                    # The wait ends on ANY boarding, tracked line or not — else
+                    # wait_start would keep stale entries for every pt agent in
+                    # the region and charge them to a later line-44 leg.
+                    t_wait = wait_start.pop(pid, None) if pid else None
                     if vid and _track_pax(vid):
                         pax_counts[vid] += 1
                         pax_timeline[vid].append((t, pax_counts[vid]))
                         n_pax_board += 1
+                        if pid:
+                            open_leg[pid] = (vid, elem.get("transitLine"),
+                                             elem.get("transitRoute"), t_wait, t)
+                            if t_wait is None:
+                                n_leg_no_wait += 1
 
                 elif etype == "PersonLeavesPtVehicle":
                     vid = elem.get("vehicle")
+                    pid = elem.get("person")
                     if vid and _track_pax(vid):
                         pax_counts[vid] = max(0, pax_counts[vid] - 1)
                         pax_timeline[vid].append((t, pax_counts[vid]))
+                        leg = open_leg.pop(pid, None) if pid else None
+                        if leg is not None:
+                            if leg[0] == vid:
+                                v, line, route, t_wait, t_board = leg
+                                pax_legs.append((pid, v, line, route,
+                                                 t_wait, t_board, t))
+                            else:
+                                open_leg[pid] = leg   # not this vehicle: put it back
 
                 elif etype == "PersonEntersVehicle":
                     vid = elem.get("vehicle")
@@ -354,17 +424,24 @@ def parse_events(
                     if vid and _track_pax(vid):
                         flink = _facility_link(elem.get("facility"))
                         if flink is not None:
-                            open_stop[vid] = (flink, t)
+                            d_arr = elem.get("delay")
+                            open_stop[vid] = (flink, t,
+                                              float(d_arr) if d_arr is not None else None)
 
                 elif etype == "VehicleDepartsAtFacility":
                     vid = elem.get("vehicle")
                     if vid and vid in open_stop:
-                        flink, t_arr = open_stop.pop(vid)
+                        flink, t_arr, d_arr = open_stop.pop(vid)
                         if t >= t_arr:
                             stop_intervals[(vid, flink)].append((t_arr, t))
                             stop_standing[vid][flink] += t - t_arr
+                            d_dep = elem.get("delay")
+                            stop_delays[vid].append(
+                                (flink, t_arr, t, d_arr,
+                                 float(d_dep) if d_dep is not None else None))
 
                 elem.clear()
+                root.clear()
 
     # ── Build DataFrame ────────────────────────────────────────────────────
     df = pd.DataFrame(
@@ -381,6 +458,22 @@ def parse_events(
     df.attrs["stop_standing"] = {vid: dict(links)
                                  for vid, links in stop_standing.items()}
 
+    # One row per passenger leg on the tracked buses. Legs still open when the
+    # stream ends (the agent is aboard at midnight) are dropped, not padded:
+    # an unfinished ride has no travel time.
+    n_leg_unclosed = len(open_leg)
+    pax_legs_df = pd.DataFrame(
+        pax_legs,
+        columns=["person_id", "vehicle_id", "transit_line", "transit_route",
+                 "t_wait_start_s", "t_board_s", "t_alight_s"],
+    )
+    pax_legs_df["wait_s"] = (pax_legs_df["t_board_s"]
+                             - pax_legs_df["t_wait_start_s"])
+    pax_legs_df["invehicle_s"] = (pax_legs_df["t_alight_s"]
+                                  - pax_legs_df["t_board_s"])
+    df.attrs["pax_legs"] = pax_legs_df
+    df.attrs["stop_delays"] = {vid: list(v) for vid, v in stop_delays.items()}
+
     if verbose:
         print(f"[parse_events] entered-link events: {n_entered:,}")
         print(f"[parse_events] left-link events matched: {n_left:,}")
@@ -391,6 +484,9 @@ def parse_events(
         print(f"[parse_events] total v_mean records: {len(df):,}")
         print(f"[parse_events] pt boardings on tracked buses: {n_pax_board:,} "
               f"(drivers seen, not counted: {n_driver_board:,})")
+        print(f"[parse_events] passenger legs closed: {len(pax_legs_df):,} "
+              f"(no waitingForPt before boarding: {n_leg_no_wait}, "
+              f"still aboard at the end: {n_leg_unclosed})")
         if n_driver_board and not n_pax_board:
             print("[parse_events] WARNING: drivers but ZERO passenger boardings — "
                   "check the event type written by this MATSim version")
@@ -403,7 +499,90 @@ def parse_events(
     _cache_put(cache_key, (df, pax_dict))
     out_df = df.copy()
     out_df.attrs["stop_standing"] = df.attrs["stop_standing"]  # copy() may drop attrs
+    out_df.attrs["pax_legs"] = df.attrs["pax_legs"]
+    out_df.attrs["stop_delays"] = df.attrs["stop_delays"]
     return out_df, {k: list(v) for k, v in pax_dict.items()}
+
+
+# ── Passenger travel-time helper ───────────────────────────────────────────
+
+def pax_leg_deltas(baseline_legs: pd.DataFrame,
+                   scenario_legs: pd.DataFrame) -> dict:
+    """
+    Per-passenger travel-time change, scenario − baseline.
+
+    SIGN: positive = the passenger is WORSE OFF (more seconds), the opposite of
+    the vehicle-hours convention, because "additional travel time per passenger"
+    only reads naturally that way. Say so in the caption.
+
+    Paired by person_id, not compared as two means. The background plans are
+    frozen (ChangeExpBeta only, no re-routing), so the same person makes the same
+    pt leg in both runs and the difference is taken within the person; with ~100
+    boardings, mean-against-mean would be swamped by who happens to travel.
+    A person with several legs is summed first, so the unit is one passenger's
+    day, not one boarding.
+
+    Persons present in only one of the two runs are NOT dropped silently: they
+    are counted and reported, because a passenger who caught a different
+    departure is itself an effect of the dwell.
+    """
+    empty = {"pax_n_paired": 0, "pax_n_baseline_only": 0, "pax_n_scenario_only": 0,
+             "pax_d_wait_s": None, "pax_d_invehicle_s": None,
+             "pax_d_total_s": None, "pax_d_total_pct": None}
+    if baseline_legs is None or scenario_legs is None:
+        return empty
+    if baseline_legs.empty or scenario_legs.empty:
+        return empty
+
+    def _per_person(legs: pd.DataFrame) -> pd.DataFrame:
+        g = legs.groupby("person_id")[["wait_s", "invehicle_s"]].sum()
+        g["total_s"] = g["wait_s"] + g["invehicle_s"]
+        return g
+
+    b, s = _per_person(baseline_legs), _per_person(scenario_legs)
+    both = b.index.intersection(s.index)
+    if len(both) == 0:
+        return {**empty, "pax_n_baseline_only": int(len(b)),
+                "pax_n_scenario_only": int(len(s))}
+
+    d = s.loc[both] - b.loc[both]
+    base_total = b.loc[both, "total_s"]
+    # Percentage of the passenger's own trip, per person, then averaged: the
+    # benchmark a reader can hold ("2% of their journey"), not raw seconds.
+    pct = (d["total_s"] / base_total.where(base_total > 0)).mean() * 100.0
+    return {
+        "pax_n_paired": int(len(both)),
+        "pax_n_baseline_only": int(len(b.index.difference(s.index))),
+        "pax_n_scenario_only": int(len(s.index.difference(b.index))),
+        "pax_d_wait_s": float(d["wait_s"].mean()),
+        "pax_d_invehicle_s": float(d["invehicle_s"].mean()),
+        "pax_d_total_s": float(d["total_s"].mean()),
+        "pax_d_total_pct": (float(pct) if pd.notna(pct) else None),
+    }
+
+
+def stop_departure_delay_delta(baseline_delays: dict, scenario_delays: dict) -> dict:
+    """
+    Mean schedule deviation at the stop, scenario − baseline, from MATSim's own
+    `delay` attribute. Positive = the bus leaves later than in the baseline.
+
+    With awaitDeparture=true the bus cannot leave before its timetabled time, so
+    the DEPARTURE delay is the part of the freight dwell that reaches the
+    passengers waiting downstream, while whoever is already aboard pays the whole
+    dwell. Reporting only one of the two would answer a different question.
+    """
+    def _mean(delays: dict, idx: int) -> float | None:
+        vals = [row[idx] for rows in (delays or {}).values() for row in rows
+                if row[idx] is not None]
+        return float(sum(vals) / len(vals)) if vals else None
+
+    b_arr, s_arr = _mean(baseline_delays, 3), _mean(scenario_delays, 3)
+    b_dep, s_dep = _mean(baseline_delays, 4), _mean(scenario_delays, 4)
+    return {
+        "bus_d_arrival_delay_s": (s_arr - b_arr) if (b_arr is not None and s_arr is not None) else None,
+        "bus_d_departure_delay_s": (s_dep - b_dep) if (b_dep is not None and s_dep is not None) else None,
+        "bus_n_stops_with_delay": sum(len(v) for v in (scenario_delays or {}).values()),
+    }
 
 
 # ── Passenger count helper ─────────────────────────────────────────────────

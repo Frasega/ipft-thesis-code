@@ -4,10 +4,12 @@ import io, collections
 import xml.etree.ElementTree as ET
 import numpy as np
 import zstandard as zstd
+from scenario_presets import OUTPUT_ROOT  # run output location: config/machine.yaml
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
-BASE = "D:/TesiOutputs/ipft_rotterdam_longbase"
-EVENTS = f"{BASE}/MRDH_10pct.output_events.xml.zst"
-LINKS_CSV = f"{BASE}/MRDH_10pct.output_links.csv.zst"
+BASE = str(OUTPUT_ROOT / "ipft_rotterdam_longbase")
+EVENTS = str(run_path(BASE, "output_events.xml.zst"))
+LINKS_CSV = str(run_path(BASE, "output_links.csv.zst"))
 SC = "scenarios/ipft_rotterdam"
 MS2 = 3.6
 

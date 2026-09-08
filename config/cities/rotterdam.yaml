@@ -1,0 +1,122 @@
+# Rotterdam - the simulated world every Rotterdam bus line shares.
+#
+# Nothing here is about a bus line. It is the network, the population, the timetable
+# and the calibrated MATSim configuration, plus the two factors that must move with
+# the population sample. Every line configuration in config/lines/ that names
+# `city: rotterdam` inherits all of it, which is why two lines can never disagree
+# about which network they run on.
+#
+# The heavy inputs come from Jingjun Li (j.li-21@tudelft.nl) and are NOT in the git
+# repository - roughly 320 MB, passed separately. The repo alone does not run.
+
+schema: ipft-city/1
+
+name: rotterdam
+
+scenario_dir:
+  value: scenarios/ipft_rotterdam
+  note: >
+    Every generated config directory MUST be a direct child of this one. Config
+    generation rewrites the config's input paths with a leading '../', so a config
+    placed anywhere else loses the network, the timetable and the vehicles at once.
+    The two HBEFA factor CSVs must also sit here, under exactly the names the config
+    names them by.
+
+network_file:
+  value: scenarios/ipft_rotterdam/networkWithRideAndBike.xml.gz
+  note: 657,005 links. Every link id in a line configuration is resolved against it.
+
+base_config:
+  value: scenarios/ipft_rotterdam/config.xml
+  note: >
+    The calibrated configuration, 7,060 activity blocks. Generated configs are clones
+    of it with only the seed, plans file, output directory, iteration count, capacity
+    factors, emissions module and frozen strategies overwritten - scoring, activity
+    types and routing are inherited untouched, which is what makes the runs comparable
+    to the calibration they came from.
+
+peak_base_plans:
+  value: scenarios/ipft_rotterdam/planExternalProcessed_lowerCase.xml.gz
+  note: 10% ActivitySim sample, 256,447 persons.
+
+offpeak_base_plans:
+  value: scenarios/ipft_rotterdam/plans_offpeak_base.xml.gz
+  note: >
+    127,862 persons - the peak population halved. Peak and off-peak cannot share an
+    equilibrium: a smaller population settles into a different network state, so each
+    demand level needs its own equilibration run.
+
+base_transit_schedule:
+  value: scenarios/ipft_rotterdam/ptSchedule36Hour.xml.gz
+  note: >
+    The UNMODIFIED timetable: 397 lines, 5,023 routes, 20,868 departures. Every dwell
+    variant is built from it and every line derivation reads it, so it must be the same
+    file the equilibration used.
+
+emission_vehicles_file:
+  value: ../emission_vehicles_rotterdam.xml
+  note: >
+    Relative to the GENERATED directory, not to the project root - this string is
+    written into the config, which lives one level down. Carries the HBEFA attributes
+    for the road fleet.
+
+transit_vehicles_file:
+  value: ../ptVehicleExtended.xml
+  note: >
+    The TRANSIT module's vehicles file - not the emissions one above. It carries each
+    transit vehicle type's capacity, length and passengerCarEquivalents, and the PCE is
+    the only thing in the whole configuration that sets how much road space a bus takes
+    up: 2.8 here, the HCM figure for an 18 m articulated bus. Relative to the generated
+    directory, hence the '../'. ptVehiclePCE028.xml is the same file with the Bus type
+    at 0.28 - one tenth, to match the 10% sampled road capacity - and is selected with
+    --pt-vehicles on the scenario generators rather than by editing this line, so that
+    both campaigns can exist side by side.
+
+sample_rate:
+  value: 0.10
+  note: >
+    Sets the whole scale convention. Van insertion and Terms A and B work at simulated
+    scale and are multiplied by 1/sample_rate at the end; Term C and the feasibility
+    check work in REAL units, because the timetable is not sampled - every real bus
+    departure is simulated one to one.
+
+flow_capacity_factor:
+  value: 0.1
+  note: Must match sample_rate, or 10% of the demand meets 100% of the road capacity.
+
+storage_capacity_factor:
+  value: 0.1
+  note: >
+    May legitimately differ from the flow factor; the Java raises MATSim's consistency
+    tolerance so that it can.
+
+transit_prefixes:
+  value: ["veh_"]
+  note: >
+    Every Rotterdam transit vehicle id begins with veh_. These vehicles are EXCLUDED
+    from the Term A background because their HBEFA values are placeholder
+    passenger-car numbers, which the bus term replaces with a longitudinal-dynamics
+    calculation. This list must stay in step with TRANSIT_PREFIXES compiled into
+    Co2TotalsHandler.java: on a network whose transit vehicles are named differently,
+    the whole fleet lands in the background total and Term A inflates with no error.
+
+run_id_prefix:
+  value: "MRDH_10pct."
+  note: >
+    The runId this config sets, which MATSim prepends to every output file. Used only
+    to FIND outputs (MRDH_10pct.output_events.xml.zst), never to write them - a
+    different city will have a different one, or none.
+
+add_freight_mode:
+  value: false
+  note: >
+    False: vans ride as 'car', the mode this config already routes and scores, and stay
+    separable by their backup_van_ id prefix. Adding a mode the calibration never saw
+    would leave it unscored.
+
+write_emission_events:
+  value: false
+  note: >
+    False: individual emission events would grow the events file to roughly 8 GB per
+    run. With it false the Java aggregates CO2 per vehicle class into co2_totals.csv,
+    which is what Term A reads.

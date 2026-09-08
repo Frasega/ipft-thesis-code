@@ -56,7 +56,7 @@ import pandas as pd
 from corridor_metrics import corridor_background_stats, corridor_delta
 from parse_events import load_link_attributes, parse_events
 from recompute_link_co2 import emissions_by_set, load_hbefa
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
 ALPHAS = [0.25, 0.50, 0.75, 1.00]
 
@@ -78,7 +78,14 @@ def java_background(runs: str, cell: str):
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--runs-dir", default="D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs")
+    ap.add_argument("--runs-dir", default=str(OUTPUT_ROOT / "ipft_rotterdam_dwell_blocking_runs"))
+    # The alpha=0 runs are not always in --runs-dir: a re-measurement changes the
+    # scenario cells and reuses the baselines, so they stay in the campaign that
+    # produced them. Without this the whole thing prints "nessuna baseline" and
+    # does nothing, which is how the 2026-08-25 k-hop pass silently produced nothing.
+    ap.add_argument("--baseline-dir", default=None,
+                    help="Where the alpha=0 runs live, when not in --runs-dir "
+                         "(default: --runs-dir).")
     ap.add_argument("--weights", nargs="*", default=["light", "medium", "heavy"])
     ap.add_argument("--congestion", nargs="*", default=["peak", "offpeak"])
     ap.add_argument("--seeds", nargs="*", type=int, default=[4711, 9876])
@@ -120,6 +127,7 @@ def main() -> None:
     keep = frozenset().union(*sets.values())
     print(f"set: {', '.join(f'{k}({len(v)})' for k, v in sets.items())}")
 
+    base_dir = args.baseline_dir or args.runs_dir
     deadlocks = frozenset()
     if args.exclude_deadlocks:
         f = scen / "deadlock_links.txt"
@@ -146,9 +154,9 @@ def main() -> None:
         for c in args.congestion:
             base = {}
             for s in args.seeds:
-                p = events_of(args.runs_dir, f"alpha000_{c}_{w}_seed{s}")
+                p = events_of(base_dir, f"alpha000_{c}_{w}_seed{s}")
                 if p:
-                    base[s] = (parse(p), java_background(args.runs_dir, f"alpha000_{c}_{w}_seed{s}"))
+                    base[s] = (parse(p), java_background(base_dir, f"alpha000_{c}_{w}_seed{s}"))
             if not base:
                 print(f"[skip] {w}/{c}: nessuna baseline"); continue
 

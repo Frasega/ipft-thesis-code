@@ -36,10 +36,24 @@ from pathlib import Path
 def _resolve_java() -> str:
     """
     Locate the java executable.
-    Priority: $JAVA_HOME/bin/java(.exe) → java on PATH → fail.
+    Priority: $JAVA_HOME → config/machine.yaml java_home → java on PATH → fail.
+
+    machine.yaml declares java_home (config/schema.py MACHINE_PARAMS) and until
+    2026-09 nothing read it: a cluster where the module system provides an older
+    JDK than the one the jar was compiled for would set it, be ignored, and fail
+    with UnsupportedClassVersionError. The environment still wins, because that is
+    what a batch script sets.
     """
-    java_home = os.environ.get("JAVA_HOME")
-    if java_home:
+    candidates = [os.environ.get("JAVA_HOME")]
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from config.paths import java_home as _declared_java_home
+        candidates.append(_declared_java_home())
+    except Exception:  # noqa: BLE001 - a missing settings file must not block a run
+        pass
+    for java_home in candidates:
+        if not java_home:
+            continue
         candidate = Path(java_home) / "bin" / ("java.exe" if os.name == "nt" else "java")
         if candidate.exists():
             return str(candidate)
@@ -286,7 +300,6 @@ if __name__ == "__main__":
     p.add_argument("--config", default=None,
                    help="Run a single config file instead of the full batch")
     p.add_argument("--scenario", default=None,
-                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset — sets the default --config-dir")
     p.add_argument("--config-dir", default=None,
                    help="Directory containing generated config files "
@@ -324,7 +337,18 @@ if __name__ == "__main__":
             config_dir = "scenarios/ipft_toy/generated"
 
     if args.config:
+        # --skip-existing and the ITERS pruning used to live only in run_all, so a
+        # single-config invocation silently ignored both. That is the invocation a
+        # SLURM job array makes (one config per task): the array was not
+        # resubmittable, because every finished cell would be run again, and each
+        # run kept its 2 GB ITERS/ directory - 180 GB for a 60-run campaign instead
+        # of 36. Both behaviours belong to the run, not to the batch loop.
+        if args.skip_existing and _output_events_for_config(args.config).exists():
+            print(f"[runner] skip (already run): {Path(args.config).stem}")
+            sys.exit(0)
         r = run_one(args.config, jar, jvm_heap=args.heap, verbose=args.verbose)
+        if r["ok"] and not args.keep_iters:
+            _prune_iters(args.config)
         sys.exit(0 if r["ok"] else 1)
     else:
         results = run_all(

@@ -14,17 +14,19 @@ Re-run is safe: cells already in results_long.csv are skipped.
 Dwell-in-MATSim runs (schedules from make_dwell_schedules.py) live in their own
 runs dir and get their own output dir, so the pre-dwell surface stays intact:
     python python_pipeline/rotterdam_surface_robust.py \
-        --runs-dir D:/TesiOutputs/ipft_rotterdam_dwell_runs \
+        --runs-dir <output_root>/ipft_rotterdam_dwell_runs \
         --out output/sensitivity_rotterdam_dwell --dwell-in-matsim
 """
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import glob
 import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +41,29 @@ CONG = ["peak", "offpeak"]
 WEIGHTS = ["light", "medium", "heavy"]
 SEEDS = ["4711", "9876"]
 ALPHAS = ["025", "050", "075", "100"]
+# The NOx block comes back nested, one entry per fleet world, because that is
+# the shape the question has: "does the ratio hold for an old fleet AND a new
+# one". A CSV wants scalars, so it is flattened to nox_<world>_<field>. Written
+# as a loop over whatever worlds euro_factors declares, so adding a third world
+# needs no change here.
+NOX_FIELDS = ("s_van_nox_g_per_day", "e_pt_nox_g_per_day",
+              "e_pt_nox_mass_g_per_day", "e_pt_nox_dwell_g_per_day",
+              "idle_rate_g_per_h", "extra_dwell_h_per_day", "ratio",
+              "links_outside_ef_speed_range", "crosscheck_ec_over_model",
+              "legacy_e_pt_nox_low_g_per_day", "legacy_e_pt_nox_high_g_per_day")
+
+
+def flatten_nox(nox: dict | None) -> dict:
+    """nox_<world>_<field> columns, or nothing when the cell had --nox off."""
+    if not nox:
+        return {}
+    out = {}
+    for world, r in nox.items():
+        for f in NOX_FIELDS:
+            out[f"nox_{world}_{f}"] = r.get(f)
+    return out
+
+
 KEEP = ["term_a_kg", "term_b_kg", "term_b_excl_deadlock_kg", "n_deadlock_links",
         "term_c_kg", "net_saving_kg_per_day",
         "net_robust_kg_per_day", "term_a_corridor_kg", "alpha_max",
@@ -46,6 +71,19 @@ KEEP = ["term_a_kg", "term_b_kg", "term_b_excl_deadlock_kg", "n_deadlock_links",
         "term_a_vans_kg", "term_a_busstop_kg",
         "vanrow_delta_vehicle_hours", "busstop_delta_vehicle_hours",
         "corridor_delta_vehicle_hours", "corridor_speed_change_ms",
+        # Speed on the two disjoint rows: the corridor mixes van relief and bus
+        # cost and averages them away, so only the split says which leg moved.
+        "vanrow_speed_change_ms", "busstop_speed_change_ms",
+        # Dead-link-free variants: the ones that go in the thesis.
+        "corridor_delta_vehicle_hours_excl_deadlock", "corridor_speed_change_ms_excl_deadlock",
+        "vanrow_delta_vehicle_hours_excl_deadlock", "vanrow_speed_change_ms_excl_deadlock",
+        "busstop_delta_vehicle_hours_excl_deadlock", "busstop_speed_change_ms_excl_deadlock",
+        "corridor_n_deadlock_links", "vanrow_n_deadlock_links", "busstop_n_deadlock_links",
+        # Passenger travel time (scenario − baseline, positive = worse off) and
+        # the schedule deviation that awaitDeparture lets through.
+        "pax_n_paired", "pax_n_baseline_only", "pax_n_scenario_only",
+        "pax_d_wait_s", "pax_d_invehicle_s", "pax_d_total_s", "pax_d_total_pct",
+        "bus_d_arrival_delay_s", "bus_d_departure_delay_s", "bus_n_stops_with_delay",
         "idle_mode", "extra_dwell_s_per_trip", "dwell_in_matsim"]
 
 
@@ -78,7 +116,6 @@ def main() -> None:
     # runs analysed as 'rotterdam' come back with line-44 trips, stops, parcels
     # and bus ids, and nothing complains.
     ap.add_argument("--scenario", default="rotterdam",
-                    choices=["rotterdam", "rotterdam_L87"],
                     help="rotterdam = line 44 (default), rotterdam_L87 = the "
                          "second corridor. Must match the runs in --runs-dir.")
     # Layer-3 knobs, passed straight through to each cell's subprocess, which
@@ -98,6 +135,20 @@ def main() -> None:
                          "live. The right one is picked per congestion level and "
                          "passed to each cell; Term B is then reported twice, with "
                          "and without those links.")
+    ap.add_argument("--nox", action="store_true",
+                    help="Also compute NOx per cell for the two fleet worlds. "
+                         "Each cell is its own subprocess, so this costs one "
+                         "read of the 11 MB EMEP/EEA workbook per cell (~20 s). "
+                         "The reported quantity is the van-saving / bus-cost "
+                         "RATIO, and the bus side is a bracket — PIANO.md 4.2quater.")
+    ap.add_argument("--jobs", type=int, default=1,
+                    help="Cells to analyse at the same time (default 1, the "
+                         "historical behaviour). Each cell is still its own "
+                         "subprocess; this only says how many run at once. The "
+                         "cost is one events parse per file and it is "
+                         "single-threaded, so the limit is RAM, not CPU: size it "
+                         "on the peak resident set of one cell, and leave room "
+                         "for the machine.")
     ap.add_argument("--dwell-in-matsim", action="store_true",
                     help="Runs simulate the freight dwell in the schedule: Term C "
                          "idle uses the measured extra standing (scenario - baseline).")
@@ -113,6 +164,7 @@ def main() -> None:
 
     done = already_done(LONG)
     rows = []
+    tasks: list = []      # one entry per cell to analyse; filled by the loops below
     if LONG.exists():
         rows = pd.read_csv(LONG).to_dict("records")
 
@@ -147,6 +199,8 @@ def main() -> None:
                            "--alpha", str(af), "--weight", w, "--output", tmp]
                     if args.dwell_in_matsim:
                         cmd.append("--dwell-in-matsim")
+                    if args.nox:
+                        cmd.append("--nox")
                     dl = (Path(args.deadlock_links_dir) /
                           ("deadlock_links.txt" if c == "peak"
                            else "deadlock_links_offpeak.txt"))
@@ -158,21 +212,48 @@ def main() -> None:
                                       ("--extra-dwell-s", args.extra_dwell_s)):
                         if val is not None:
                             cmd += [flag, str(val)]
-                    r = subprocess.run(cmd, capture_output=True, text=True)
-                    if not os.path.exists(tmp):
-                        tail = (r.stderr or r.stdout)[-160:].replace("\n", " ")
-                        print(f"[error] {c}/{w}/seed{s}/alpha{a}: {tail}", flush=True)
-                        continue
-                    d = json.load(open(tmp))
-                    os.remove(tmp)
-                    row = dict(alpha=af, congestion=c, weight_regime=w, seed=int(s),
-                               **{k: d.get(k) for k in KEEP})
-                    rows.append(row)
-                    # persist immediately (crash-resilient)
-                    pd.DataFrame(rows).to_csv(LONG, index=False)
-                    print(f"[ok] {c}/{w}/seed{s}/alpha{a}  "
-                          f"net={d.get('net_saving_kg_per_day'):+.1f}  "
-                          f"robust={d.get('net_robust_kg_per_day'):+.1f}", flush=True)
+                    tasks.append((c, w, s, a, af, tmp, cmd))
+
+    # ── Run the cells, --jobs at a time ────────────────────────────────────
+    # Threads, not processes: the work happens in the subprocess, and
+    # subprocess.run releases the GIL while it waits. Rows are written as they
+    # land, so a crash costs the cells still in flight and nothing else.
+    write_lock = threading.Lock()
+
+    def run_cell(task):
+        _c, _w, _s, _a, _af, tmp, cmd = task
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if not os.path.exists(tmp):
+            return task, None, (r.stderr or r.stdout)[-160:].replace(chr(10), " ")
+        d = json.load(open(tmp))
+        os.remove(tmp)
+        return task, d, None
+
+    print(f"[driver] {len(tasks)} cells to analyse, {args.jobs} at a time", flush=True)
+    n_ok = n_err = 0
+    with cf.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = [pool.submit(run_cell, t) for t in tasks]
+        for fut in cf.as_completed(futures):
+            task, d, err = fut.result()
+            c, w, s, a, af, _tmp, _cmd = task
+            if err is not None:
+                n_err += 1
+                print(f"[error] {c}/{w}/seed{s}/alpha{a}: {err}", flush=True)
+                continue
+            row = dict(alpha=af, congestion=c, weight_regime=w, seed=int(s),
+                       **{k: d.get(k) for k in KEEP})
+            row.update(flatten_nox(d.get("nox")))
+            with write_lock:
+                rows.append(row)
+                n_ok += 1
+                # persist immediately (crash-resilient)
+                pd.DataFrame(rows).to_csv(LONG, index=False)
+                print(f"[ok {n_ok}/{len(tasks)}] {c}/{w}/seed{s}/alpha{a}  "
+                      f"net={d.get('net_saving_kg_per_day'):+.1f}  "
+                      f"robust={d.get('net_robust_kg_per_day'):+.1f}", flush=True)
+    if n_err:
+        print(f"[driver] {n_err} cells failed and are NOT in the CSV — re-run the "
+              f"same command, finished cells are skipped", flush=True)
 
     # aggregate -> mean over seeds
     df = pd.DataFrame(rows)
@@ -188,6 +269,13 @@ def main() -> None:
                        ("extra_dwell_s_per_trip", "extra_dwell_s_mean")]:
         if col in df.columns and df[col].notna().any():
             agg[label] = (col, "mean")
+    # Every NOx column averages over seeds like the rest. The two RATIO columns
+    # are averaged as ratios, which is not the ratio of the averages — with two
+    # seeds the difference is immaterial, and the per-seed values stay in
+    # results_long.csv for anyone who wants to check.
+    for col in [c for c in df.columns if c.startswith("nox_")]:
+        if df[col].notna().any():
+            agg[f"{col}_mean"] = (col, "mean")
     g = df.groupby(["alpha", "congestion", "weight_regime"], as_index=False).agg(**agg)
     g.to_csv(OUT / "results_mean.csv", index=False)
     print(f"\nWROTE {len(g)} cells -> {OUT/'results_mean.csv'}", flush=True)

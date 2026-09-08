@@ -4,15 +4,17 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+from scenario_presets import OUTPUT_ROOT  # run output location: config/machine.yaml
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
-RUN = Path(os.environ.get("IPFT_OUTPUT_ROOT", "D:/TesiOutputs")) / "ipft_rotterdam_longbase"
+RUN = OUTPUT_ROOT / "ipft_rotterdam_longbase"
 OUT = Path(os.environ.get(
     "IPFT_FIGURES_DIR",
     r"c:\Users\frare\OneDrive\Desktop\Tesi documents\Tesi Regazzoni\figures",
 )) / "convergence_curve.png"
 OUT.parent.mkdir(parents=True, exist_ok=True)
 
-df = pd.read_csv(RUN / "MRDH_10pct.ph_modestats.csv", sep=";")
+df = pd.read_csv(run_path(RUN, "ph_modestats.csv"), sep=";")
 it = df["Iteration"].astype(int)
 car = df["car_travel"].astype(float) / 1000.0  # thousands of car-hours
 

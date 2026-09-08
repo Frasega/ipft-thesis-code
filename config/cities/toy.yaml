@@ -1,0 +1,77 @@
+# The sandbox - a small synthetic grid, not a city.
+#
+# It exists so that the whole chain can be exercised in about a minute per run instead
+# of half an hour, and so that screening questions can be answered before they are
+# worth a Rotterdam campaign. Its numbers are not results; its purpose is that the
+# machinery is the same machinery.
+#
+# Note the two values that differ in kind from Rotterdam rather than in size:
+# sample_rate is 1.0 (there is no sampling, so simulated scale IS real scale), and
+# add_freight_mode is true (the sandbox config defines a separate freight mode, which
+# a calibrated city config would have no scoring for).
+
+schema: ipft-city/1
+
+name: toy
+
+scenario_dir:
+  value: scenarios/ipft_toy
+  note: >
+    Also the home of the two HBEFA factor CSVs that BOTH scenarios use - Rotterdam
+    reaches them from here. Moving them breaks emissions in both.
+
+network_file: scenarios/ipft_toy/reduced_network.xml
+
+base_config: scenarios/ipft_toy/config.xml
+
+peak_base_plans:
+  value: scenarios/ipft_toy/reduced_plans.xml
+  note: 20,000 background agents.
+
+offpeak_base_plans:
+  value: scenarios/ipft_toy/reduced_plans_offpeak_base.xml
+  note: >
+    A 50% background subsample of the peak population, created on demand by the config
+    generator if it is missing.
+
+base_transit_schedule: scenarios/ipft_toy/reduced_transitSchedule_5min_headway.xml
+
+emission_vehicles_file:
+  value: ../emission_vehicles.xml
+  note: Relative to the generated directory, as in every city configuration.
+
+sample_rate:
+  value: 1.0
+  note: >
+    No sampling: the sandbox population is the whole population. Simulated scale and
+    real scale coincide, so the 1/sample_rate multiplier is the identity here and any
+    scale bug stays invisible - which is exactly why the scale convention has to be
+    checked on Rotterdam, not here.
+
+flow_capacity_factor: 1.0
+
+storage_capacity_factor: 1.0
+
+transit_prefixes:
+  value: ${parameters.BUS_ID_PREFIXES}
+  note: >
+    Read from parameters.py rather than copied, so the sandbox prefixes cannot drift
+    away from the constants file that documents them. Resolves to the three synthetic
+    corridor prefixes EW_lower_, EW_upper_ and NS_.
+
+run_id_prefix:
+  value: ""
+  note: The sandbox config sets no runId, so output files carry no prefix.
+
+add_freight_mode:
+  value: true
+  note: >
+    The sandbox vans are their own network mode, with their own scoring parameters
+    added to the generated config. A real city config has no scoring for a mode its
+    calibration never saw, which is why Rotterdam sends vans as cars instead.
+
+write_emission_events:
+  value: true
+  note: >
+    Affordable here: the network is small enough that the events file stays workable,
+    so Term A can read emission events directly instead of the aggregated CSV.

@@ -1,0 +1,152 @@
+# RET bus 87 - Spijkenisse Medocgaard -> Hofweg.
+#
+# The second corridor, and the reason this configuration exists as a file at all: it
+# was chosen on 2026-08-19 by screening every bus direction in the network - 163
+# candidates with at least 4 km, 6 stops and 30 daily departures - on three criteria:
+# whether the service is healthy in the simulation, whether the catchment is large
+# enough, and whether the parcel load stays feasible. 68 of the 163 pass.
+#
+# The first candidate, 99470 Zuidplein->Ridderkerk, was dropped because only 20 of its
+# 53 delivery trips reach the end of the route: it crosses the Zuidplein deadlock. Line
+# 87 completes 63 of 63.
+#
+# Against line 44: 63 departures against 98, 9.58 km against 6.39, 16 delivery stops
+# against 8, median route capacity 600 veh/h against 3,000, catchment 2,966 in the
+# sample against 3,759. Total freight dwell per day is comparable - 28,224 s against
+# 31,360, within 10% - so the bus-side cost is roughly held while everything else
+# varies, which is what makes the two lines a contrast rather than two anecdotes.
+#
+# Feasibility at full load: 58.8 parcels/trip against the 70-parcel space cap (margin
+# 11); light 177 kg and medium 589 kg against the 1,000 kg allowance, but heavy
+# 1,471 kg - so heavy is infeasible above about 0.68 against 0.83 on line 44. What
+# binds here is service frequency, not demand.
+#
+# Every value below comes from derive_line.py 94298 564425, not from hand counting.
+
+schema: ipft-line/1
+
+name: rotterdam_L87
+city: rotterdam
+
+line_tag:
+  value: L87
+  note: >
+    Goes into every generated name: warm plans, configs, run directories, dwell
+    schedules, surfaces. Without it this line would silently REUSE line 44's warm
+    plans, because a plans file that already exists is never regenerated - and the
+    result would be line 44's vans analysed as line 87's.
+
+transit_line_id:
+  value: "94298"
+  note: The <transitLine id>. Not the public number 87.
+
+hub_stop_link:
+  value: "564425"
+  note: Medocgaard, the first stop of the outbound direction.
+
+vehicle_ids_file:
+  value: line94298_564425_vehicle_ids.txt
+  note: Written by derive_line.py 94298 564425.
+
+vehicle_ids_expected: 63
+
+bus_trips_per_day:
+  value: 63
+  note: All outbound route variants. See the branch note under pickup_link_ids.
+
+n_pickup_stops:
+  value: 16
+  note: The 17 common stops minus the hub.
+
+pickup_link_ids:
+  value: ["386421", "124553", "575533", "565674", "612221", "562034",
+          "360304", "360277", "489287", "541196", "543792", "222093",
+          "717829", "593358", "592823", "616176"]
+  note: >
+    THE DELIVERY SEGMENT IS THE COMMON PREFIX, and that is a real property of the line
+    rather than a simplification. The 63 outbound departures split into two branches
+    after stop 17: 40 run via Halfweg 2 and Laanweg (both bus-and-pt-only) to Hofweg
+    343629, and 23 via Kelvinweg and Wattweg to Hofweg 343628. The first 17 stops are
+    identical in every departure. A locker can only stand where EVERY bus stops, so the
+    delivery segment ends at stop 17 and the branch lies outside it. Dropping those
+    stops costs almost nothing in demand - the catchment goes from 2,968 to 2,966 in
+    the sample - because the branch runs through an industrial estate with no homes.
+
+van_locker_stops:
+  value:
+    - ["386421", 82429.2, 427600.4]
+    - ["124553", 82507.5, 427740.1]
+    - ["575533", 82847.8, 427525.7]
+    - ["565674", 83141.4, 427626.2]
+    - ["612221", 83181.7, 428136.3]
+    - ["562034", 82778.7, 428701.7]
+    - ["360304", 82380.1, 428676.7]
+    - ["541196", 82060.2, 429313.6]
+    - ["543792", 81825.2, 429556.7]
+    - ["222093", 81820.8, 430147.2]
+    - ["717829", 81638.4, 430420.2]
+    - ["593358", 81243.7, 430294.6]
+    - ["592823", 80923.6, 430257.3]
+    - ["616176", 80577.0, 430075.8]
+  note: >
+    FOURTEEN of the 16 pickup stops. Two - 360277 Hekelingseweg and 489287 Metro
+    Centrum - are bus-and-pt-only platform links: the bus serves them, so they carry
+    freight mass, but no van can enter and no locker can stand there. They are
+    therefore pickup stops and NOT lockers, the same asymmetry as line 44's terminus,
+    and the reason the freight-mass divisor is the number of BUS stops rather than the
+    number of lockers.
+
+n_freight_units_sim:
+  value: 371
+  note: Catchment 2,968 in the 10% sample -> 3,710 real parcels/day.
+
+hub_link:
+  value: "564425"
+  note: >
+    Unlike line 44, both termini are already car-accessible - 564425 is bus,car and
+    616176 is reachable - so no nearby-car-link substitution is needed and the depot
+    can sit on the stop itself.
+
+terminal_link:
+  value: "616176"
+  note: The last common stop, where the delivery segment ends and the branch begins.
+
+hub_xy: [82212.0, 427078.0]
+terminal_xy: [80610.3, 430099.7]
+
+van_mode:
+  value: car
+  note: Same convention and same conservative bias as line 44 - see that file.
+
+van_departure: "07:00:00"
+van_spread_minutes:
+  value: 120.0
+  note: Baseline departure grid, as on line 44.
+
+generated_dir:
+  value: scenarios/ipft_rotterdam/generated_L87
+  note: >
+    INSIDE scenarios/ipft_rotterdam/, and that is not cosmetic. Config generation
+    re-prefixes input paths with '../', so keeping this directory a direct child of the
+    scenario directory is what still resolves the network, the timetable and the
+    vehicles in scenarios/ipft_rotterdam/.
+
+output_base_dir: ${machine.output_root}/ipft_rotterdam_L87_runs
+
+corridor_links_file:
+  value: scenarios/ipft_rotterdam/generated_L87/corridor_links.txt
+  note: >
+    INSIDE generated_L87/, and this is the important one. The Java looks for the bare
+    filename in the config's own directory FIRST and only then in the parent, so this
+    copy wins and line 44's corridor is never read by an L87 run. Were it missing, the
+    fallback would hand this line line 44's corridor and write plausible numbers with
+    no error anywhere. Verify on the log line
+    'Co2TotalsHandler: link set loaded from ...'.
+
+bus_stop_links_file:
+  value: scenarios/ipft_rotterdam/generated_L87/bus_stop_links.txt
+  note: Same reasoning as corridor_links_file.
+
+hb_route_prefixes:
+  value: []
+  note: Unused - vehicle_ids_file names the vehicles exactly.

@@ -10,13 +10,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from corridor_metrics import corridor_background_stats, load_corridor_links
 from parse_events import load_link_attributes, parse_events
 from scenario_presets import get_preset
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
 ROOT = Path(__file__).parent.parent
 RUN = ROOT / "output" / "ipft_rotterdam_convergence_check"
 
 # 1) tempi di viaggio van da trips.csv
 times = []
-with open(RUN / "MRDH_10pct.output_trips.csv.zst", "rb") as f:
+with open(run_path(RUN, "output_trips.csv.zst"), "rb") as f:
     r = zstd.ZstdDecompressor().stream_reader(f)
     t = io.TextIOWrapper(r, encoding="utf-8")
     header = t.readline().strip().split(";")
@@ -37,7 +38,7 @@ if n:
 
 # 2) velocita' corridoio dal final events
 p = get_preset("rotterdam")
-events = RUN / "MRDH_10pct.output_events.xml.zst"
+events = run_path(RUN, "output_events.xml.zst")
 vmean, _ = parse_events(str(events), str(ROOT / p.network_file), verbose=False,
                         bus_prefixes=p.transit_prefixes, pax_bus_ids=p.term_c_bus_ids)
 links = load_corridor_links(ROOT / p.corridor_links_file)

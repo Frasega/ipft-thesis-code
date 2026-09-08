@@ -333,7 +333,6 @@ def _plot_surface(grouped: pd.DataFrame, out_dir: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description="Assemble the 30-scenario sensitivity surface")
     p.add_argument("--scenario", default="toy",
-                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset: sets defaults for runs-dir, network, "
                         "n-freight, pickup stops, transit filters, F, sample rate")
     p.add_argument("--runs-dir", default=None,

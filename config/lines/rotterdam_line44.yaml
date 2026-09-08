@@ -1,0 +1,157 @@
+# RET bus 44 - Rotterdam Centraal (perron BB) -> Zuidplein Hoog.
+#
+# The headline corridor: every number reported in the thesis comes from this line
+# unless it says otherwise, and the sensitivity brackets were built on it.
+#
+# Everything about the CITY - network, population, timetable, calibrated config,
+# capacity factors, sample rate - lives in config/cities/rotterdam.yaml and is not
+# repeated here.
+
+schema: ipft-line/1
+
+name: rotterdam
+city: rotterdam
+
+line_tag:
+  value: ""
+  note: >
+    Empty, deliberately: line 44 is the first line and keeps the historical unsuffixed
+    file names, so its existing runs, configs and surfaces stay valid. Every OTHER line
+    must set a tag, or it silently reuses these files - a warm plans file that already
+    exists is never regenerated.
+
+transit_line_id:
+  value: "99437"
+  note: The <transitLine id> in ptSchedule36Hour.xml.gz. Not the public number 44.
+
+hub_stop_link:
+  value: "174131"
+  note: >
+    Centraal perron BB, the first stop in the hub-to-terminal direction. Route
+    selection keys on it: it is what separates the 98 outbound departures, which carry
+    freight, from the 99 return departures, which do not.
+
+vehicle_ids_file:
+  value: line44_hb_vehicle_ids.txt
+  note: >
+    The exact 98 outbound vehicle ids, relative to the city scenario directory. The
+    line has 197 vehicles in total; a prefix would match the return direction too and
+    feed its load profile in backwards. The full 197-vehicle list is kept alongside in
+    line44_vehicle_ids.txt for reference only.
+
+vehicle_ids_expected:
+  value: 98
+  note: >
+    Checked on load. A truncated or stale id file raises nowhere downstream - it just
+    makes Term C smaller, which looks like a result.
+
+bus_trips_per_day:
+  value: 98
+  note: >
+    F. Outbound departures only, 06:05-24:01. NOT 197: that is both directions, and the
+    return direction carries no freight, so using it would double Term C.
+
+n_pickup_stops:
+  value: 8
+  note: The 9 outbound stops minus the hub, where nothing is dropped off.
+
+pickup_link_ids:
+  value: ["448306", "668963", "448173", "438699", "178358", "390546", "49628", "121963"]
+  note: >
+    The 8 delivery stops IN ROUTE ORDER, from the 93-link outbound variant. The order
+    is the datum: the freight mass declines along it. Spacing the stops evenly by link
+    index instead - the earlier approach - invented a delivery mid-way across the Maas,
+    where the route runs 2.6 km with no stop at all, and under-charged the freight mass
+    by about 8%.
+    121963 (Zuidplein Hoog) is the terminus and the LAST link of the route, so it never
+    appears in an event-derived link sequence; the divisor stays n_pickup_stops.
+
+van_locker_stops:
+  value:
+    - ["448306", 91409.1, 437465.0]
+    - ["668963", 91432.1, 437135.3]
+    - ["448173", 91471.0, 436243.8]
+    - ["438699", 92015.2, 433846.2]
+    - ["178358", 91974.3, 433544.4]
+    - ["390546", 92101.6, 433426.3]
+    - ["49628",  92665.7, 433474.5]
+  note: >
+    SEVEN, not eight: the terminus 121963 is a bus-and-pt-only platform link, so the
+    bus serves it and it carries freight mass, but no car can enter and no locker can
+    stand there. That asymmetry between pickup stops and lockers is why the freight
+    mass is divided by the number of BUS stops rather than by the number of lockers.
+    All seven here are bus,car,pt links. Coordinates are each link's to-node, EPSG:28992.
+    An activity on each one forces the router through them - without this the van took
+    the fastest car road and touched none of the stops the bus serves.
+
+n_freight_units_sim:
+  value: 470
+  note: >
+    Simulated parcels per day, so 4,700 real at the city's 10% sample. Derived, not
+    chosen: the catchment is the residents with a home within 400 m of an outbound
+    line-44 stop (3,759 in the sample, 37,590 real), times 0.125 parcels per person per
+    day (Dutch e-commerce, range 0.10-0.15). See derive_n_freight.py.
+
+hub_link:
+  value: "668917"
+  note: >
+    A van DEPOT link, NOT the bus terminus. The line-44 termini are bus-and-pt-only
+    platform links, and vans routed from there got stuck at the first turn (verified in
+    the 2026-06-10 smoke run). This is the nearest robust car link - 129 m from perron
+    BB, capacity 2,000 veh/h, enough for 235 simulated vans across the two-hour window
+    at the 0.1 flow factor.
+
+terminal_link:
+  value: "717345"
+  note: Nearest robust car link to Zuidplein Hoog, 79 m away. Same reason as hub_link.
+
+hub_xy: [91799.1, 437534.1]
+terminal_xy: [93170.4, 433519.5]
+
+van_mode:
+  value: car
+  note: >
+    'car' is the mode this calibrated config routes and scores; the backup_van_ id
+    prefix keeps the vans separable in every filter. KNOWN CONSERVATIVE BIAS: mode car
+    means a passenger-car equivalent of 1.0 instead of roughly 1.5 for a light
+    commercial vehicle, so the vans occupy less road space than real vans, their
+    congestion contribution is under-estimated, Term A is under-estimated, and IPFT
+    therefore looks WORSE than it is. Declared in the thesis limitations.
+
+van_departure: "07:00:00"
+
+van_spread_minutes:
+  value: 120.0
+  note: >
+    Depot departures spread evenly over 07:00-09:00. The grid is the BASELINE's: a van
+    that survives at a higher load rate keeps the exact departure time it had at zero,
+    so baseline minus scenario is the missing tours and not the same tours moved
+    elsewhere in the peak. Getting this wrong moved the van saving by +19% on average.
+
+generated_dir:
+  value: scenarios/ipft_rotterdam/generated
+  note: A direct child of the city scenario directory - see the note there.
+
+output_base_dir: ${machine.output_root}/ipft_rotterdam_runs
+
+corridor_links_file:
+  value: scenarios/ipft_rotterdam/corridor_links.txt
+  note: >
+    105 links - the roads the vans actually drive, and the set corridor-local Term A
+    and the speed metrics are measured on. It sits in the scenario directory rather
+    than in generated/ because line 44 is the untagged line: the Java's parent-directory
+    fallback resolves to this file, which IS line 44's own. Any tagged line must keep
+    its copy inside its own generated directory instead.
+    Derived FROM an alpha=0 run, which is why a new line costs one run before its real
+    campaign can start.
+
+bus_stop_links_file:
+  value: scenarios/ipft_rotterdam/bus_stop_links.txt
+  note: >
+    The 7 car-mode line-44 stop links plus the 7 links one hop upstream, minus the van
+    corridor. Van relief and bus-stop queueing are measured on DISJOINT sets and
+    reported apart, so neither can absorb the other's sign.
+
+hb_route_prefixes:
+  value: []
+  note: Unused - vehicle_ids_file names the vehicles exactly.

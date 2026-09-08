@@ -42,7 +42,7 @@ import pandas as pd
 
 from corridor_metrics import corridor_background_stats, corridor_delta, load_corridor_links
 from parse_events import load_link_attributes, parse_events
-from scenario_presets import get_preset
+from scenario_presets import OUTPUT_ROOT, get_preset
 
 ALPHAS = [0.25, 0.50, 0.75, 1.00]
 
@@ -54,7 +54,7 @@ def events_of(runs_dir: str, cell: str) -> str | None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--runs-dir", default="D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs")
+    ap.add_argument("--runs-dir", default=str(OUTPUT_ROOT / "ipft_rotterdam_dwell_blocking_runs"))
     ap.add_argument("--weights", nargs="*", default=["light", "medium", "heavy"])
     ap.add_argument("--congestion", nargs="*", default=["peak", "offpeak"])
     ap.add_argument("--seeds", nargs="*", type=int, default=[4711, 9876])

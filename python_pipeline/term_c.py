@@ -72,15 +72,20 @@ from parameters import (
 from sort_cycles import reconstruct_bus_profile
 
 
-# ── Term C in NOx: engine work, not kilometres ────────────────────────────
+# ── Term C in NOx: mass and standing, not kilometres ──────────────────────
 #
 # Everything in this block is ADDITIVE. No CO2 number changes.
 #
 # THE POINT, IN ONE SENTENCE: the bus drives the same F trips on the same links
 # whether or not it carries the freight, so delta-bus-km is EXACTLY ZERO and a
-# g/km emission factor would return exactly zero. What changes is tractive work
-# (the extra mass) and standing time (the extra dwell) - and heavy-duty NOx is
-# certified in g/kWh over the WHTC, which matches that structure directly.
+# g/km emission factor would return exactly zero. What changes is the mass it
+# carries and how long it stands, and those are priced separately - the mass on
+# the EMEP/EEA load axis, the standing on a measured idle rate.
+#
+# The engine-work conversion below is no longer on the NOx path. It is kept
+# because the implied brake thermal efficiency it guards is reported in the
+# methodology, and because it is the check that the two efficiencies in
+# parameters.py stay physically consistent with each other.
 #
 # The conversion needs no new physics, because emission_formula is linear:
 #     E_fuel[J] -> MJ -> litres (/35.8) -> kg CO2 (x2.65)
@@ -118,52 +123,215 @@ def co2_kg_to_engine_kwh(co2_kg: float,
 
 
 def compute_term_c_nox(term_c_result: dict, euro_class: str,
-                       bus_trips_per_day: int | None = None) -> dict:
+                       bus_trips_per_day: int | None = None,
+                       baseline_load_fraction: float = 0.0,
+                       cross_check: bool = True) -> dict:
+    """Term C in NOx: the extra tailpipe NOx of carrying freight on the bus.
+
+    TWO EFFECTS, EACH PRICED BY THE SOURCE THAT MEASURES IT. Delta-bus-km is
+    exactly zero - the same F trips on the same links - so a plain g/km factor
+    would return zero. What changes is the mass carried and the time spent
+    standing, and those are two different measurements:
+
+        dNOx = [EF(v_base, load + dLoad) - EF(v_base, load)] x bus_km    <- mass
+             + idle_rate_g_per_h x extra_dwell_hours_per_day             <- dwell
+
+    THE MASS TERM moves one published axis of the EMEP/EEA curves and holds
+    everything else fixed, so it is exact within the source.
+
+    THE DWELL TERM is a measured idle rate (euro_factors.bus_idle_nox_g_per_h),
+    which is the same shape the CO2 side has always used: seconds of standing
+    times a per-hour rate. It is NOT read off the speed curve. A bus standing
+    still is not the same object as a bus driving slowly: the slow bus in the
+    source data is accelerating 18 tonnes back up to speed repeatedly, while a
+    stationary one lets the exhaust cool until the SCR falls below light-off.
+    Reading the curve at the depressed journey speed was the previous method and
+    it understated the cost - its widest Euro VI reading implied 17.3 g/h against
+    a measurement of 20. The superseded bracket is still returned under
+    `legacy_*` keys so the change stays auditable.
+
+    NO DOUBLE COUNTING. The mass term is evaluated at v_base on BOTH sides, so
+    the dwell never enters it; the speed axis is not moved at all any more.
+
+    WHY NOT g/kWh. That route needs an engine-work conversion (CO2 -> litres ->
+    kWh) with a brake-thermal-efficiency assumption, and the only published
+    g/kWh figures for buses are Euro VI type-approval limits, which real vehicles
+    exceed in urban duty. The load axis needs neither.
+
+    THE LOAD BASIS, which is the one judgement call. Passengers are identical in
+    both worlds and cancel, so only the freight enters:
+
+        dLoad = freight_per_trip_kg / (BUS_PASSENGER_CAPACITY x AVG_PERSON_WEIGHT_KG)
+
+    using the thesis's own constants (80 x 75 kg = 6,000 kg). A larger nominal
+    capacity would make the freight a smaller share and the bus look cheaper, so
+    this is the conservative choice as well as the consistent one.
+
+    baseline_load_fraction defaults to 0: line 44 carries about one passenger per
+    trip (109 boardings over 98 trips, measured), i.e. ~1 % of capacity. Pass the
+    measured value on a line where it matters.
+
+    Returns the NOx delta and, unless cross_check=False, the same calculation run
+    in ENERGY CONSUMPTION from the same table - which prices the freight in CO2
+    empirically and can be compared against the physics model's own term_c_kg.
+    That comparison is what makes the mixed method defensible (PIANO.md
+    4.2quater D); it is reported, never used to correct anything.
     """
-    Term C in NOx: the extra tailpipe NOx of carrying freight on the bus.
-
-    Two independent parts, kept separate because they behave differently and
-    because a reader will want to know which one dominates:
-
-      running   extra tractive work from the freight mass, x g/kWh
-      idle      extra standing time at the delivery stops,  x g/h
-
-    The idle part is the one to watch. Prolonged idling cools the SCR below its
-    light-off temperature and NOx conversion collapses, so the Euro VI advantage
-    can narrow or vanish precisely there. That is a mechanism, not a guess - but
-    it is a mechanism this model does not simulate, so it enters only through
-    whatever idle factor is entered in euro_factors.BUS_NOX_IDLE. Choose that
-    number knowing what it is doing.
-
-    Reuses term_c_result rather than recomputing anything, so the CO2 and the
-    NOx can never disagree about how much extra work or dwell there was.
-    """
-    from euro_factors import BUS_NOX_IDLE, BUS_NOX_RUNNING
+    from euro_factors import (IDLE_NOX_SOURCE, bus_ec,
+                              bus_idle_nox_g_per_h, bus_nox)
+    from parameters import AVG_PERSON_WEIGHT_KG, BUS_PASSENGER_CAPACITY
 
     F = bus_trips_per_day if bus_trips_per_day is not None else BUS_TRIPS_PER_DAY
 
-    running_co2_per_trip = term_c_result["co2_running_delta_kg_per_trip"]
-    dwell_s_per_trip = term_c_result["extra_dwell_s_per_trip"]
+    missing = [k for k in ("bus_km_per_trip", "bus_running_time_s_per_trip",
+                           "extra_dwell_s_per_trip", "freight_per_trip_kg")
+               if term_c_result.get(k) is None]
+    if missing:
+        raise ValueError(
+            f"term_c_result is missing {missing} — it must come from "
+            f"compute_term_c_for_bus, not from an older cached result.")
 
-    kwh_per_trip = co2_kg_to_engine_kwh(running_co2_per_trip)
-    nox_running_per_trip = kwh_per_trip * BUS_NOX_RUNNING[euro_class].at()
-    nox_idle_per_trip = dwell_s_per_trip / 3600.0 * BUS_NOX_IDLE[euro_class].at()
+    km = float(term_c_result["bus_km_per_trip"])
+    t_run = float(term_c_result["bus_running_time_s_per_trip"])
+    t_stand = term_c_result.get("bus_standing_s_per_trip_baseline")
+    if t_stand is None:
+        raise ValueError(
+            "the representative bus has no baseline standing time recorded, so "
+            "its baseline journey speed cannot be formed. That speed is where "
+            "the mass term is evaluated: treating the standing as zero would "
+            "raise it, and the load axis flattens as speed rises, so the bus "
+            "cost would be UNDERSTATED. Re-run the cell with facility events "
+            "(--dwell-in-matsim), or pass the standing explicitly.")
+    t_stand = float(t_stand)
+    extra_dwell = float(term_c_result["extra_dwell_s_per_trip"])
+    if km <= 0 or t_run <= 0:
+        raise ValueError(f"bus trip geometry is degenerate: {km} km in {t_run} s")
 
-    return {
-        "term_c_nox_g_per_day": (nox_running_per_trip + nox_idle_per_trip) * F,
-        "nox_running_g_per_day": nox_running_per_trip * F,
-        "nox_idle_g_per_day": nox_idle_per_trip * F,
-        "engine_kwh_per_trip": kwh_per_trip,
-        "engine_kwh_per_day": kwh_per_trip * F,
-        "extra_dwell_s_per_trip": dwell_s_per_trip,
-        "extra_dwell_h_per_day": dwell_s_per_trip * F / 3600.0,
+    # Journey speed, INCLUDING standing: that is what the published curves mean
+    # by mean speed. parse_events subtracts standing from v_mean, so it is added
+    # back here rather than assumed to be zero.
+    v_base = km / ((t_run + t_stand) / 3600.0)
+    v_raw = km / ((t_run + t_stand + extra_dwell) / 3600.0)
+
+    capacity_kg = BUS_PASSENGER_CAPACITY * AVG_PERSON_WEIGHT_KG
+    d_load = float(term_c_result["freight_per_trip_kg"]) / capacity_kg
+    L0 = baseline_load_fraction
+    L1 = L0 + d_load
+
+    nox = bus_nox(euro_class)
+    ec = bus_ec(euro_class)
+    # Taken as a DELTA: the curves live in an lru_cache, so one instance serves
+    # every cell in the process and the absolute count would be the running
+    # total of all the cells before this one.
+    clamped_before = nox.n_clamped
+    ef_base = nox.at(v_base, L0)
+
+    # ── the dwell, priced by a MEASURED idle rate ───────────────────────────
+    #
+    # This is now the same shape as the CO2 side: seconds of extra standing
+    # times a published per-hour rate. It replaces a bracket that existed only
+    # because EMEP/EEA publishes no idle row, and that bracket was wrong in a
+    # way worth recording - its upper end for Euro VI was 17.3 g/h implied,
+    # while the measurement is 20. Reading the speed curve UNDERSTATED the cost
+    # at both ends, because a bus that is genuinely stationary lets the SCR cool
+    # in a way that no point on a driving curve represents.
+    #
+    # The mass term keeps coming from the EMEP load axis, which is exact: it
+    # moves one published axis and nothing else. Each of the two effects is now
+    # priced by the source that actually measures it.
+    idle_rate = bus_idle_nox_g_per_h(euro_class)
+    extra_dwell_h_per_day = extra_dwell * F / 3600.0
+    dwell_g_per_day = idle_rate * extra_dwell_h_per_day
+
+    mass_only = nox.at(v_base, L1) - ef_base
+    mass_g_per_day = mass_only * km * F
+
+    # ── the superseded bracket, kept so the change is auditable ─────────────
+    #
+    # Reading the curve at the speed the extra dwell produces treats our
+    # standing as ordinary slow urban driving (upper end); anchoring the speed
+    # drop to the idle fuel the CO2 model charges asks what that much fuel does
+    # to NOx (lower end). Reported for comparison only. Nothing downstream of
+    # `term_c_nox_g_per_day` depends on it.
+    idle_l_per_trip = BUS_IDLE_FUEL_RATE_L_PER_S * extra_dwell
+    target_mj_per_km = (idle_l_per_trip * CALORIFIC_VALUE_DIESEL_MJ_PER_L / km
+                        if km else 0.0)
+    v_cal = _speed_for_extra_energy(ec, v_base, L0, target_mj_per_km)
+    dwell_high = nox.at(v_raw, L0) - ef_base
+    dwell_low = nox.at(v_cal, L0) - ef_base
+
+    out = {
+        # One number now, not a pair: mass off the published load axis, dwell
+        # off a published idle rate.
+        "term_c_nox_g_per_day": mass_g_per_day + dwell_g_per_day,
+        "nox_mass_component_g_per_day": mass_g_per_day,
+        "nox_dwell_g_per_day": dwell_g_per_day,
+        "nox_idle_rate_g_per_h": idle_rate,
+        "nox_idle_rate_source": IDLE_NOX_SOURCE,
+        "nox_extra_dwell_h_per_day": extra_dwell_h_per_day,
+        # superseded, for the audit trail only
+        "legacy_term_c_nox_g_per_day_low": mass_g_per_day + dwell_low * km * F,
+        "legacy_term_c_nox_g_per_day_high": mass_g_per_day + dwell_high * km * F,
+        "legacy_nox_dwell_low_g_per_day": dwell_low * km * F,
+        "legacy_nox_dwell_high_g_per_day": dwell_high * km * F,
+        "ef_baseline_g_per_km": ef_base,
+        "v_baseline_kmh": v_base,
+        "v_dwell_raw_kmh": v_raw,
+        "v_dwell_fuel_calibrated_kmh": v_cal,
+        "idle_litres_per_trip": idle_l_per_trip,
+        "load_baseline": L0,
+        "load_scenario": L1,
+        "d_load": d_load,
+        "bus_payload_capacity_kg": capacity_kg,
+        "bus_km_per_day": km * F,
         "euro_class": euro_class,
         "bus_trips_per_day": F,
-        # Delta-km is zero BY CONSTRUCTION, not by measurement: same trips, same
-        # links. Carried explicitly so a reader never wonders whether it was
-        # forgotten, and so a km-based factor can be shown to give zero.
+        "n_speed_clamped": nox.n_clamped - clamped_before,
+        # Zero BY CONSTRUCTION, not by measurement: same trips, same links.
+        # Carried explicitly so a reader never wonders whether it was forgotten.
         "delta_bus_km_per_day": 0.0,
     }
+
+    if cross_check:
+        # What the empirical energy curve says the raw speed drop costs in CO2,
+        # against what the physics model charges. The gap is not an error to be
+        # corrected: it IS the width of the dwell bracket, made explicit.
+        d_mj_raw = ec.at(v_raw, L1) - ec.at(v_base, L0)
+        litres = d_mj_raw * km * F / CALORIFIC_VALUE_DIESEL_MJ_PER_L
+        out["crosscheck_ec_co2_kg_per_day"] = litres * CO2_FACTOR_KG_PER_L
+        out["crosscheck_model_co2_kg_per_day"] = term_c_result.get("term_c_kg_per_day")
+        model = out["crosscheck_model_co2_kg_per_day"]
+        out["crosscheck_ratio"] = (out["crosscheck_ec_co2_kg_per_day"] / model
+                                   if model else None)
+
+    return out
+
+
+def _speed_for_extra_energy(ec, v_base: float, load: float,
+                            target_mj_per_km: float) -> float:
+    """The speed at which the energy curve costs `target_mj_per_km` more than at
+    v_base - i.e. the speed drop the SOURCE says burns the fuel our idle model
+    says the dwell burns.
+
+    Bisection on a monotone stretch: EC rises as speed falls over the whole urban
+    range these curves cover. Returns v_base when there is nothing to find, and
+    the bottom of the range when the curve cannot account for that much fuel.
+    """
+    if target_mj_per_km <= 0:
+        return v_base
+    lo, hi = ec.lowest_valid_speed, v_base
+    base = ec.at(v_base, load)
+    if lo >= v_base or ec.at(lo, load) - base < target_mj_per_km:
+        # The curve cannot account for that much fuel within its published range;
+        # the bottom of that range is the strongest statement it can make.
+        return lo
+    for _ in range(80):
+        mid = (lo + hi) / 2.0
+        if ec.at(mid, load) - base > target_mj_per_km:
+            lo = mid
+        else:
+            hi = mid
+    return hi
 
 
 # ── Measured extra standing (dwell simulated inside MATSim) ────────────────
@@ -440,6 +608,27 @@ def compute_term_c_for_bus(
         "n_links_processed": len(bus_links),
         "bus_id": bus_id,
         "total_freight_kg_per_day": total_freight_kg_per_day,
+        # ── geometry of the trip, for the NOx side ──────────────────────────
+        # Distance is v_mean x travel_time, the same two numbers the emission
+        # model was charged with, so the kilometres cannot silently disagree
+        # with the CO2 they accompany (same convention as term_b.van_km_on_route).
+        # Running time EXCLUDES standing at stops: parse_events subtracts it from
+        # v_mean. The NOx side needs the journey speed INCLUDING standing, so the
+        # baseline standing of this bus is carried out too and added back there.
+        "bus_km_per_trip": float(
+            (bus_links["v_mean_ms"].astype(float)
+             * (bus_links["travel_time_s"].astype(float).clip(lower=1.0)
+                if has_tt else 20.0)).sum() / 1000.0),
+        "bus_running_time_s_per_trip": float(
+            bus_links["travel_time_s"].astype(float).clip(lower=1.0).sum()
+            if has_tt else 20.0 * len(bus_links)),
+        # None, not 0.0, when this bus is absent from the baseline standing
+        # data: a silent zero would put the baseline journey speed too high and
+        # overstate the whole NOx cost. The NOx side refuses rather than guesses.
+        "bus_standing_s_per_trip_baseline": (
+            float(sum(stop_standing_baseline[bus_id].values()))
+            if stop_standing_baseline and bus_id in stop_standing_baseline
+            else None),
     }
 
 

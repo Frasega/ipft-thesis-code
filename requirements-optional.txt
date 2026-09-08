@@ -1,0 +1,15 @@
+# Optional dependency, needed by exactly two scripts and by nothing the campaign runs.
+#
+#   build_wltc_cycles.py       rebuilds python_pipeline/cycle_data/*.csv
+#   validate_van_consumption.py  checks the van emission model against the Ford
+#                                Transit WLTP figure
+#
+# wltp is a 2019 alpha release with no wheel for recent CPython, so on a machine
+# without a build toolchain `pip install` fails - and if it were listed in
+# requirements.txt it would fail the whole install, on a cluster, for a package no run
+# needs. The WLTC cycles it produces are committed under python_pipeline/cycle_data/,
+# so the campaign reads them straight from the repository.
+#
+#   pip install -r requirements-optional.txt
+
+wltp==0.1.2a0        # official WLTC class-3b cycle, used to build the van driving cycles

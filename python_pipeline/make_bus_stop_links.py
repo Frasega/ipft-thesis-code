@@ -76,7 +76,6 @@ def main() -> None:
     ap.add_argument("--out", default=None,
                     help="Default: the preset's bus_stop_links_file")
     ap.add_argument("--scenario", default="rotterdam",
-                    choices=["rotterdam", "rotterdam_L87"],
                     help="Which line's stops become row 2. Everything below comes "
                          "from the preset — line id, hub stop, vehicle ids, corridor "
                          "and output path — so running it for the second line cannot "

@@ -47,6 +47,7 @@ from pathlib import Path
 
 import pandas as pd
 import zstandard as zstd
+from scenario_presets import OUTPUT_ROOT  # run output location: config/machine.yaml
 
 LINE44 = "99437"
 ALPHAS = [0.25, 0.50, 0.75, 1.00]
@@ -139,7 +140,7 @@ def load_deltas(path: str | None) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--runs-dir", default="D:/TesiOutputs/ipft_rotterdam_dwell_blocking_runs")
+    ap.add_argument("--runs-dir", default=str(OUTPUT_ROOT / "ipft_rotterdam_dwell_blocking_runs"))
     ap.add_argument("--weights", nargs="*", default=["light", "medium", "heavy"])
     ap.add_argument("--congestion", nargs="*", default=["peak", "offpeak"])
     ap.add_argument("--seeds", nargs="*", type=int, default=[4711, 9876])

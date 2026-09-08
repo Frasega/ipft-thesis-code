@@ -57,7 +57,6 @@ def main() -> None:
     ap.add_argument("--hops", type=int, default=3)
     ap.add_argument("--out-dir", default=None)
     ap.add_argument("--scenario", default="rotterdam",
-                    choices=["rotterdam", "rotterdam_L87"],
                     help="Which corridor the rings are built around. The preset "
                          "supplies the network and the corridor file, so a second "
                          "line never reads line 44's links.")

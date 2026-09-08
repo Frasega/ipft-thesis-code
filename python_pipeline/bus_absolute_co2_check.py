@@ -29,20 +29,22 @@ from parameters import (
     BUS_TARE_KG,
 )
 from parse_events import load_link_attributes, parse_events
-from scenario_presets import _PROJECT_ROOT, get_preset
+from scenario_presets import OUTPUT_ROOT, _PROJECT_ROOT, get_preset
 from sort_cycles import reconstruct_bus_profile
+from config.paths import run_path  # resolves the optional MATSim runId prefix
 
 RNG_SEED = 42  # canonical reconstruction seed (matches the headline surface)
 
 # The canonical toy surface lives in ipft_toy_warm_runs (not the preset's
 # output_base_dir, which predates the warm-start reorganisation).
-TOY_RUNS_ROOT = Path("D:/TesiOutputs/ipft_toy_warm_runs")
-EVENTS_FILENAME = {"rotterdam": "MRDH_10pct.output_events.xml.zst",
-                   "toy": "output_events.xml.zst"}
+TOY_RUNS_ROOT = OUTPUT_ROOT / "ipft_toy_warm_runs"
+# The two scenarios used to need different filenames here, because Rotterdam's
+# config sets a runId and MATSim prepends it while the sandbox's does not. That
+# difference is now resolved by config.paths.run_path, so there is one name.
 
 
 def unladen_co2_per_trip(run_dir: Path, preset) -> dict:
-    events = run_dir / EVENTS_FILENAME[preset.name]
+    events = run_path(run_dir, "output_events.xml.zst")
     network = _PROJECT_ROOT / preset.network_file
 
     # Rotterdam: keep_link_ids=frozenset() keeps only vans (none at alpha=0)

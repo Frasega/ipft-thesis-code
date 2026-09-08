@@ -113,6 +113,7 @@ def patch_config(
     flow_capacity_factor: float | None = None,
     storage_capacity_factor: float | None = None,
     transit_schedule_file: str | None = None,
+    transit_vehicles_file: str | None = None,
 ) -> ET.ElementTree:
     """
     Return a modified copy of the base config XML tree with:
@@ -127,6 +128,16 @@ def patch_config(
         (dwell-in-MATSim: the per-alpha schedule from make_dwell_schedules.py).
         Pass an ABSOLUTE path — it is applied after the ../ re-prefixing, so a
         relative one would be resolved against generated/ and break.
+      - the TRANSIT module's vehiclesFile overridden when transit_vehicles_file is
+        given, or when the preset declares one. That file carries the bus PCE, so
+        it is the only way to change the road space a bus consumes. Pass it exactly
+        as it should appear in the config — '../ptVehiclePCE028.xml' — because it
+        is applied AFTER the ../ re-prefixing.
+
+    NOTE. Two different modules hold a param called vehiclesFile and they mean
+    different files: `transit` names the transit vehicle types (capacity, length,
+    PCE), `vehicles` names the road fleet's HBEFA types. Setting the wrong one
+    fails quietly - the run proceeds with the other file's contents.
     """
     tree = ET.parse(base_config_path)
     root = tree.getroot()
@@ -161,6 +172,17 @@ def patch_config(
             raise ValueError(f"No transit module in {base_config_path} — cannot "
                              f"override transitScheduleFile")
         _set_param(transit_mod, "transitScheduleFile", transit_schedule_file)
+
+    # ── Transit VEHICLES override — this is the bus PCE ───────────────────
+    # The explicit argument wins over the city's declared default, so one campaign
+    # can be generated at a different PCE without editing the city file.
+    pt_vehicles = transit_vehicles_file or getattr(preset, "transit_vehicles_file", None)
+    if pt_vehicles:
+        transit_mod = _get_module_exact(root, "transit")
+        if transit_mod is None:
+            raise ValueError(f"No transit module in {base_config_path} — cannot "
+                             f"override the transit vehiclesFile")
+        _set_param(transit_mod, "vehiclesFile", pt_vehicles)
 
     # ── Global: seed ──────────────────────────────────────────────────────
     global_mod = _get_module_exact(root, "global")
@@ -420,7 +442,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).parent))
 
     p = argparse.ArgumentParser(description="Generate the 20-run MATSim config matrix")
-    p.add_argument("--scenario", default="toy", choices=["toy", "rotterdam"],
+    p.add_argument("--scenario", default="toy",
                    help="Scenario preset (default: toy)")
     p.add_argument("--n-freight", type=int, default=None,
                    help="SIMULATED freight units (default: preset — toy 2000, rotterdam 470)")

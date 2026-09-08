@@ -31,7 +31,7 @@ from scenario_presets import get_preset
 
 ROOT = Path(__file__).parent.parent
 preset = get_preset("toy")
-RUNS = Path(preset.output_base_dir)          # D:\TesiOutputs\ipft_toy_runs
+RUNS = Path(preset.output_base_dir)          # <output_root>/ipft_toy_runs
 NET = ROOT / "scenarios" / "ipft_toy" / "reduced_network.xml"
 HIST = ROOT / "output" / "sensitivity_results" / "results_long.csv"
 alpha, congestion, seed, regime = 0.50, "peak", 4711, "medium"

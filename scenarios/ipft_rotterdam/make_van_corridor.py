@@ -60,7 +60,6 @@ def main(argv: list[str]) -> None:
                     help="explicit alpha=0 events files; default: every alpha000_* "
                          "run found in --runs-dir")
     ap.add_argument("--scenario", default="rotterdam",
-                    choices=["rotterdam", "rotterdam_L87"],
                     help="which line's corridor file is written (default: line 44)")
     ap.add_argument("--runs-dir", default=None,
                     help="run tree holding the alpha=0 baselines "

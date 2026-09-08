@@ -62,6 +62,9 @@ from parameters import (
     VAN_STOP_IDLE_LOW_S,
     VAN_STOP_IDLE_HIGH_S,
     VAN_LOAD_FACTOR,
+    VAN_TYPES,
+    VanType,
+    van_type,
 )
 
 
@@ -77,6 +80,7 @@ def run_scenario(
     n_pickup_stops: int = 5,
     bus_id_override: str | None = None,
     verbose: bool = True,
+    with_nox: bool = False,
     sample_rate: float = 1.0,
     bus_trips_per_day: int | None = None,
     transit_prefixes: tuple[str, ...] | None = None,
@@ -86,6 +90,7 @@ def run_scenario(
     bus_stop_links_file: str | None = None,
     van_payload_capacity_kg: float | None = None,
     van_parcels_per_tour_max: int | None = None,
+    van: VanType | None = None,
     van_stop_idle_s: float = VAN_STOP_IDLE_S,
     van_load_factor: float | None = None,
     recon_seed: int = 42,
@@ -224,6 +229,11 @@ def run_scenario(
                      else VAN_LOAD_FACTOR),
         rng_seed=recon_seed,
         exclude_links=deadlock_links,
+        # A whole vehicle, when the van-size sensitivity gives one: it overrides
+        # the tare, the payload capacity and the parcel cap above and brings the
+        # frontal area and drag with them, so a size cannot be varied by halves.
+        # None keeps the headline van and every number it produces.
+        van=van,
     )
     if verbose:
         proxy_note = " [PROXY — no vans in baseline run]" if term_b_result["used_proxy"] else ""
@@ -314,11 +324,30 @@ def run_scenario(
         from parse_events import load_link_attributes
         link_lengths, _ = load_link_attributes(network_path)
 
+        # The dead-link exclusion is measured BOTH ways and never swapped in
+        # silence: *_excl_deadlock is the value that belongs in the thesis
+        # (vehicle-hours are a time integral, so a link where time does not
+        # advance dominates the total), while the raw one stays so the CSVs
+        # written before this fix remain comparable. It reaches only the three
+        # congestion rows here; Term B has its own exclusion (see above).
         def _delta_on(links: frozenset[str]) -> dict:
-            base_stats = corridor_background_stats(baseline_vmean, links, link_lengths)
-            scen_stats = corridor_background_stats(scenario_vmean, links, link_lengths)
-            return {**corridor_delta(base_stats, scen_stats),
-                    "baseline": base_stats, "scenario": scen_stats}
+            def _pair(excl):
+                b = corridor_background_stats(baseline_vmean, links, link_lengths,
+                                              exclude_links=excl)
+                s = corridor_background_stats(scenario_vmean, links, link_lengths,
+                                              exclude_links=excl)
+                return b, s, corridor_delta(b, s)
+
+            base_stats, scen_stats, raw = _pair(None)
+            out = {**raw, "baseline": base_stats, "scenario": scen_stats,
+                   "n_deadlock_links": 0}
+            if deadlock_links:
+                base_ex, scen_ex, excl = _pair(deadlock_links)
+                out.update({f"{k}_excl_deadlock": v for k, v in excl.items()})
+                out["n_deadlock_links"] = base_ex["n_links_excluded"]
+                out["baseline_excl_deadlock"] = base_ex
+                out["scenario_excl_deadlock"] = scen_ex
+            return out
 
         if corr_links is not None:
             corridor = _delta_on(corr_links)
@@ -334,6 +363,21 @@ def run_scenario(
             if verbose:
                 print(f"[Step 2b] Bus-stop row ({len(busstop_links)} links): "
                       f"vehicle-hours delta {busrow['delta_vehicle_hours']:+.2f} h (sim scale)")
+
+    # ── Passenger travel time on the tracked buses ─────────────────────────
+    # Same parse as everything above: the legs ride on vmean_df.attrs, so this
+    # costs no extra pass over the events.
+    from parse_events import pax_leg_deltas, stop_departure_delay_delta
+    pax_metrics = pax_leg_deltas(baseline_vmean.attrs.get("pax_legs"),
+                                 scenario_vmean.attrs.get("pax_legs"))
+    pax_metrics.update(stop_departure_delay_delta(
+        baseline_vmean.attrs.get("stop_delays"),
+        scenario_vmean.attrs.get("stop_delays")))
+    if verbose and pax_metrics["pax_n_paired"]:
+        print(f"[Step 2c] Passengers: {pax_metrics['pax_n_paired']} paired, "
+              f"{pax_metrics['pax_d_total_s']:+.1f} s each "
+              f"({pax_metrics['pax_d_wait_s']:+.1f} waiting, "
+              f"{pax_metrics['pax_d_invehicle_s']:+.1f} aboard)")
 
     # ── Step 6: Net CO2 saving (all terms at real-world scale) ────────────
     term_a_kg = (term_a_result["term_a_kg"] or 0.0) * scale
@@ -359,6 +403,74 @@ def run_scenario(
             print(f"  [INFEASIBLE: {feas.binding_constraint}] result retained but excluded from policy conclusions")
         print("=" * 60)
 
+    # ── NOx, both fleet worlds ────────────────────────────────────────────
+    #
+    # Computed HERE and not in a driver of its own, because everything it needs
+    # is already wired correctly above: the tour counts, the deadlock exclusion,
+    # the measured dwell, the representative bus. A separate script would have to
+    # reproduce that wiring, and the day one of them drifted the CO2 and the NOx
+    # would silently disagree about what the operation removed.
+    #
+    # Off by default: it costs one workbook read (~11 MB, once per process) and
+    # every existing caller expects the CO2 keys only.
+    nox_result = None
+    if with_nox:
+        import euro_factors as EF
+        from term_b import compute_term_b_nox
+        from term_c import compute_term_c_nox
+
+        per_bus = (term_c_result["per_bus"][0] if term_c_result.get("per_bus")
+                   else None)
+        nox_result = {}
+        for world, classes in EF.FLEET_SCENARIOS.items():
+            bn = compute_term_b_nox(baseline_vmean, scenario_vmean, term_b_result,
+                                    classes["van"], exclude_links=deadlock_links)
+            # Term B is a sample-scale fleet quantity, exactly like its CO2
+            # counterpart, so it takes the same scale factor. Term C is already
+            # per-day real: the timetable is not sampled.
+            s_van = bn["term_b_nox_g"] * scale
+            cn = (compute_term_c_nox(per_bus, classes["bus"],
+                                     bus_trips_per_day=bus_trips_per_day)
+                  if per_bus and alpha > 0 else None)
+            e_pt = cn["term_c_nox_g_per_day"] if cn else 0.0
+            nox_result[world] = {
+                "van_class": classes["van"], "bus_class": classes["bus"],
+                "s_van_nox_g_per_day": s_van,
+                "e_pt_nox_g_per_day": e_pt,
+                "e_pt_nox_mass_g_per_day": cn["nox_mass_component_g_per_day"] if cn else 0.0,
+                "e_pt_nox_dwell_g_per_day": cn["nox_dwell_g_per_day"] if cn else 0.0,
+                "idle_rate_g_per_h": cn["nox_idle_rate_g_per_h"] if cn else None,
+                "extra_dwell_h_per_day": cn["nox_extra_dwell_h_per_day"] if cn else 0.0,
+                # The question the thesis asks is this ratio, not the level.
+                # Above 1 the van saving wins; below 1 the operation costs NOx.
+                "ratio": (s_van / e_pt) if e_pt else None,
+                # superseded speed-curve bracket, kept for the audit trail
+                "legacy_e_pt_nox_low_g_per_day": (cn["legacy_term_c_nox_g_per_day_low"]
+                                                  if cn else 0.0),
+                "legacy_e_pt_nox_high_g_per_day": (cn["legacy_term_c_nox_g_per_day_high"]
+                                                   if cn else 0.0),
+                "van_km_removed": bn["term_b_km"] * scale,
+                "links_outside_ef_speed_range": bn["n_links_outside_ef_speed_range"],
+                "v_baseline_kmh": cn["v_baseline_kmh"] if cn else None,
+                "v_dwell_raw_kmh": cn["v_dwell_raw_kmh"] if cn else None,
+                "v_dwell_calibrated_kmh": cn["v_dwell_fuel_calibrated_kmh"] if cn else None,
+                "crosscheck_ec_over_model": cn.get("crosscheck_ratio") if cn else None,
+            }
+        if verbose:
+            print()
+            print("[NOx] fleet worlds - the ratio is the result, not the level")
+            for world, r in nox_result.items():
+                if not r["ratio"]:
+                    print(f"  {world:>6}: no bus cost in this cell (alpha=0)")
+                    continue
+                verdict = "van saving wins" if r["ratio"] > 1 else "bus cost wins"
+                print(f"  {world:>6}: S_van {r['s_van_nox_g_per_day']:8.1f} g/day"
+                      f"   E_PT {r['e_pt_nox_g_per_day']:7.1f} g/day"
+                      f"  (mass {r['e_pt_nox_mass_g_per_day']:+7.1f}"
+                      f" + dwell {r['e_pt_nox_dwell_g_per_day']:6.1f}"
+                      f" @ {r['idle_rate_g_per_h']:.0f} g/h)"
+                      f"   ratio {r['ratio']:5.2f}  {verdict}")
+
     return {
         "alpha": alpha,
         "weight_regime": weight_regime,
@@ -371,6 +483,7 @@ def run_scenario(
                                     if term_b_result.get("term_b_excl_deadlock_kg") is not None
                                     else None),
         "n_deadlock_links": term_b_result.get("n_excluded_links", 0),
+        "nox": nox_result,
         "term_c_kg": term_c_kg,
         "net_saving_kg_per_day": net_saving,
         "net_robust_kg_per_day": net_robust,
@@ -378,11 +491,24 @@ def run_scenario(
         "term_b_proxy": term_b_result["used_proxy"],
         "consolidated": term_b_result["consolidated"],
         "parcels_per_tour": term_b_result["parcels_per_tour"],
-        "van_payload_capacity_kg": (van_payload_capacity_kg if van_payload_capacity_kg is not None
-                                    else VAN_PAYLOAD_CAPACITY_KG),
+        # Taken from the Term B result rather than re-derived here, so the row
+        # reports the vehicle that was actually emitted, not the one requested.
+        "van_type": term_b_result.get("van_type"),
+        "van_tare_kg": term_b_result.get("van_tare_kg"),
+        "van_frontal_area_m2": term_b_result.get("van_frontal_area_m2"),
+        "van_payload_capacity_kg": term_b_result.get(
+            "van_payload_capacity_kg",
+            van_payload_capacity_kg if van_payload_capacity_kg is not None
+            else VAN_PAYLOAD_CAPACITY_KG),
         "van_stop_idle_s": van_stop_idle_s,
         "tours_baseline": term_b_result["tours_baseline"],
         "tours_scenario": term_b_result["tours_scenario"],
+        # The van counts the two event files actually held, against the two tour
+        # counts above, which come from the consolidation formula. A campaign that
+        # knows how many vans it inserted can compare them and catch a stale
+        # warm-plans file, which otherwise produces a plausible wrong number.
+        "n_vans_observed_baseline": term_b_result.get("n_vans_observed_baseline"),
+        "n_vans_observed_scenario": term_b_result.get("n_vans_observed_scenario"),
         "bus_id": term_c_result["representative_bus_id"],
         "n_bus_links": (term_c_result["per_bus"][0]["n_links_processed"]
                         if term_c_result["per_bus"] else 0),
@@ -398,6 +524,11 @@ def run_scenario(
                                          if corridor else None),
         "corridor_speed_change_ms": (corridor["speed_change_ms"]
                                      if corridor else None),
+        "corridor_delta_vehicle_hours_excl_deadlock":
+            (corridor.get("delta_vehicle_hours_excl_deadlock") if corridor else None),
+        "corridor_speed_change_ms_excl_deadlock":
+            (corridor.get("speed_change_ms_excl_deadlock") if corridor else None),
+        "corridor_n_deadlock_links": (corridor.get("n_deadlock_links") if corridor else None),
         # ── Dwell-in-MATSim split: the two Term-A rows, reported apart ────
         "term_a_vans_kg": ((term_a_result.get("term_a_vans_kg") or 0.0) * scale
                            if term_a_result.get("term_a_vans_kg") is not None
@@ -411,6 +542,20 @@ def run_scenario(
         "busstop_delta_vehicle_hours": (busrow["delta_vehicle_hours"]
                                         if busrow else None),
         "busstop_speed_change_ms": (busrow["speed_change_ms"] if busrow else None),
+        "vanrow_delta_vehicle_hours_excl_deadlock":
+            (vanrow.get("delta_vehicle_hours_excl_deadlock") if vanrow else None),
+        "vanrow_speed_change_ms_excl_deadlock":
+            (vanrow.get("speed_change_ms_excl_deadlock") if vanrow else None),
+        "vanrow_n_deadlock_links": (vanrow.get("n_deadlock_links") if vanrow else None),
+        # Zero by construction (make_bus_stop_links.py picks stop links, none of
+        # which deadlock): the column is written so the claim stays checkable.
+        "busstop_delta_vehicle_hours_excl_deadlock":
+            (busrow.get("delta_vehicle_hours_excl_deadlock") if busrow else None),
+        "busstop_speed_change_ms_excl_deadlock":
+            (busrow.get("speed_change_ms_excl_deadlock") if busrow else None),
+        "busstop_n_deadlock_links": (busrow.get("n_deadlock_links") if busrow else None),
+        # Passenger travel time, scenario − baseline: positive = worse off.
+        **pax_metrics,
         "dwell_in_matsim": dwell_in_matsim,
         "idle_mode": term_c_result.get("idle_mode", "a-priori"),
         "extra_dwell_s_per_trip": term_c_result.get("extra_dwell_s_per_trip"),
@@ -429,7 +574,6 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--network", required=True,
                    help="Path to the network XML (plain or .gz)")
     p.add_argument("--scenario", default="toy",
-                   choices=["toy", "rotterdam", "rotterdam_L87"],
                    help="Scenario preset: sets transit filters, F, sample rate, "
                         "pickup stops and the n-freight default (default: toy). "
                         "rotterdam = line 44, rotterdam_L87 = the second corridor. "
@@ -445,6 +589,12 @@ def _parse_args() -> argparse.Namespace:
                         "(default: preset value — toy 2000, rotterdam 470)")
     p.add_argument("--n-pickup-stops", type=int, default=None,
                    help="Freight delivery stops (default: preset — toy 5, rotterdam 8)")
+    p.add_argument("--van-type", default=None, choices=sorted(VAN_TYPES),
+                   help="Delivery vehicle for the van-removal saving (default: the "
+                        "headline Ford Transit Custom). A type carries its tare, "
+                        "payload capacity, parcel cap, frontal area and drag together, "
+                        "so a size cannot be varied by halves. A type whose "
+                        "specification has no citation in parameters.py is refused.")
     p.add_argument("--bus-id", default=None,
                    help="Bus vehicle ID to use for Term C (default: median-link-count "
                         "bus among the H→B candidates)")
@@ -472,6 +622,13 @@ def _parse_args() -> argparse.Namespace:
                    help="Per-parcel freight-handling dwell seconds (TCQSM range 3-15 s). "
                         "Rejected together with --dwell-in-matsim, where the seconds are "
                         "an input to the schedule and this would change nothing.")
+    p.add_argument("--nox", action="store_true",
+                   help="Also compute NOx for the two fleet worlds (all Euro 5/V "
+                        "and all Euro 6/VI), from the EMEP/EEA Appendix 4 curves. "
+                        "The reported quantity is the RATIO between the van saving "
+                        "and the bus cost, and the bus side is a bracket — see "
+                        "PIANO.md 4.2quater. Off by default: it reads an 11 MB "
+                        "workbook and every existing caller wants the CO2 keys only.")
     p.add_argument("--deadlock-links", default=None,
                    help="File of link ids to drop from Term B (peak and off-peak "
                         "have their own list: deadlock_links.txt / "
@@ -519,6 +676,13 @@ def main() -> None:
     van_load_factor = ({"mean": 0.5, "full": 1.0}[args.van_load]
                        if args.van_load is not None else None)
 
+    # Resolved before the eight-minute event parse, so an unsourced van type fails
+    # in the first second instead of after the work.
+    try:
+        van = van_type(args.van_type) if args.van_type else None
+    except Exception as exc:
+        sys.exit(f"run_pipeline.py: error: {exc}")
+
     n_freight = args.n_freight if args.n_freight is not None else preset.n_freight_units_sim
     n_pickup = args.n_pickup_stops if args.n_pickup_stops is not None else preset.n_pickup_stops
 
@@ -548,10 +712,12 @@ def main() -> None:
         bus_stop_links_file=preset.bus_stop_links_file,
         dwell_in_matsim=args.dwell_in_matsim,
         deadlock_links_file=args.deadlock_links,
+        van=van,
         van_stop_idle_s=van_stop_idle_s,
         van_load_factor=van_load_factor,
         recon_seed=args.recon_seed if args.recon_seed is not None else 42,
         extra_dwell_per_unit_s=args.extra_dwell_s,
+        with_nox=args.nox,
     )
 
     if args.output:

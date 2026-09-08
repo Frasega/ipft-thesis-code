@@ -15,6 +15,7 @@ Then run the two configs with scenario_runner / the MATSim JAR.
 """
 import re
 from pathlib import Path
+from scenario_presets import OUTPUT_ROOT  # run output location: config/machine.yaml
 
 GEN = Path(__file__).parent.parent / "scenarios" / "ipft_toy" / "generated"
 LONGBASE_ITERS = 80
@@ -28,7 +29,7 @@ for congestion in ("peak", "offpeak"):
                  rf'\g<1>{LONGBASE_ITERS}\g<2>', src)
 
     # Redirect output to a dedicated longbase dir on D:.
-    out = f"D:\\TesiOutputs\\ipft_toy_longbase_{congestion}"
+    out = str(OUTPUT_ROOT / f"ipft_toy_longbase_{congestion}")
     src = re.sub(r'(<param name="outputDirectory" value=")[^"]+(" />)',
                  lambda m: m.group(1) + out + m.group(2), src)
 

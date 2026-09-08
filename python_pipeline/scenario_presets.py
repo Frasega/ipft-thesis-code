@@ -33,18 +33,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from parameters import BUS_ID_PREFIXES, BUS_TRIPS_PER_DAY, N_FREIGHT_UNITS_TOY
+# Safe at module level: config.paths reads only config.loader and config.schema,
+# neither of which imports this module. The other direction — this module reaching
+# config.resolve, which DOES import ScenarioPreset — stays lazy, inside get_preset().
+from config import paths as config_paths
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROTTERDAM_SCENARIO_DIR = _PROJECT_ROOT / "scenarios" / "ipft_rotterdam"
 TOY_SCENARIO_DIR = _PROJECT_ROOT / "scenarios" / "ipft_toy"
 
-# MATSim outputs live on D: (2026-06-12): C: was nearly full (the 20-run
-# Rotterdam batch needs ~25-40 GB) and keeping multi-GB event files out of the
-# OneDrive-synced tree avoids pointless cloud uploads. The toy runs were moved
-# to D:\TesiOutputs\ipft_toy_runs (verified copy of output/ipft_toy_runs).
-# Overridable without editing the code: set IPFT_OUTPUT_ROOT to run the pipeline
-# on a machine without a D: drive.
-OUTPUT_ROOT = Path(os.environ.get("IPFT_OUTPUT_ROOT", "D:/TesiOutputs"))
+# MATSim outputs live off the system disk (2026-06-12): C: was nearly full (the
+# 20-run Rotterdam batch needs ~25-40 GB) and keeping multi-GB event files out of
+# the OneDrive-synced tree avoids pointless cloud uploads.
+#
+# Declared in config/machine.yaml since 2026-09-02, so it is no longer a literal in
+# the source. IPFT_OUTPUT_ROOT still wins over the file — the escape hatch that
+# already existed keeps working, and any script that set it keeps behaving the same.
+OUTPUT_ROOT = config_paths.output_root()
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,13 @@ class ScenarioPreset:
     storage_capacity_factor: float
     emission_vehicles_file: str            # vehicles-module file (mode vehicle types)
     add_freight_mode: bool                 # toy: freight networkMode/mainMode/modeParams
+    transit_vehicles_file: str | None = None  # transit-module vehicles file: the one
+                                           # carrying the bus PCE. None = leave the
+                                           # base config's own value alone. It is a
+                                           # SECOND parameter also called
+                                           # vehiclesFile, in the transit module,
+                                           # and it is the only place the bus's
+                                           # road-space footprint is set.
     write_emission_events: bool = True     # False: CO2 aggregated by the Java
                                            # Co2TotalsHandler into co2_totals.csv,
                                            # emission events NOT written (the
@@ -413,12 +425,44 @@ def check_sensitivity_allowed(scenario_name: str,
         f"anyway.")
 
 
+# ── Where a preset actually comes from (2026-08-28) ───────────────────────
+# Scenarios are DATA now: they live in config/lines/*.yaml, next to the city they
+# belong to, and get_preset reads them from there. The three builders above are kept
+# as the FROZEN REFERENCE the conversion is checked against — tests/golden/presets.json
+# was taken from them before the move, and
+# tests/test_preset_yaml_equivalence.py compares the YAML result to it field by field.
+# They are not a fallback: a fallback that quietly substitutes a different definition
+# is the same defect as the Java's silent '../' corridor lookup, and it would hide
+# exactly the mistake this split exists to catch.
+
+_LEGACY_BUILDERS = {
+    "toy": lambda: TOY,
+    "rotterdam": _rotterdam,
+    "rotterdam_L87": _rotterdam_l87,
+    "L87": _rotterdam_l87,
+}
+
+
+def legacy_preset(name: str) -> ScenarioPreset:
+    """The preset as declared in Python, before config/ existed.
+
+    Only two callers should ever want this: the golden-snapshot tool and the
+    equivalence test. Everything else goes through get_preset.
+    """
+    try:
+        return _LEGACY_BUILDERS[name]()
+    except KeyError:
+        raise ValueError(f"no legacy builder for {name!r} "
+                         f"(have: {', '.join(_LEGACY_BUILDERS)})") from None
+
+
 def get_preset(name: str) -> ScenarioPreset:
-    if name == "toy":
-        return TOY
-    if name == "rotterdam":
-        return _rotterdam()
-    if name in ("rotterdam_L87", "L87"):
-        return _rotterdam_l87()
-    raise ValueError(f"Unknown scenario preset: {name!r} "
-                     f"(expected 'toy', 'rotterdam' or 'rotterdam_L87')")
+    """The scenario called `name`, read from config/lines/.
+
+    `name` may be the preset name ('rotterdam'), the config file stem
+    ('rotterdam_line44') or a path to a YAML file, so every command that used to take
+    one of three literal names keeps working unchanged while a new line needs no code
+    at all — only a file.
+    """
+    from config.resolve import load_scenario
+    return load_scenario(name).preset
