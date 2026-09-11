@@ -21,13 +21,16 @@
 # 594 s of CPU inside an 11-minute iteration - about 90% of a core, alongside the
 # simulation thread.
 #
+# MEMORIA. Su compute-p1 il tetto e' 3.996 MB per CPU (48 CPU, 185 GB per nodo), e una
+# richiesta sopra il tetto viene respinta da sbatch, non ridotta. La memoria si ottiene
+# chiedendo piu' CPU. Scoperto l'11/9/2026 al primo lancio vero.
 #SBATCH --job-name=ipft-longbase
-#SBATCH --partition=compute
+#SBATCH --partition=compute-p1   # 'compute' e' in drain: zero nodi
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=3
-#SBATCH --mem-per-cpu=5G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem-per-cpu=3900M   # 4 x 3,9 GB = 15,6 GB: heap 12 GB + la JVM
 #SBATCH --output=logs/longbase-%j.out
 
 set -u

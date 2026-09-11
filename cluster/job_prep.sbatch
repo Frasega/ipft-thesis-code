@@ -13,13 +13,16 @@
 # plans file is 140 MB compressed. That is minutes of CPU and over 10 GB of RAM, which
 # is exactly what a login node is not for.
 #
+# MEMORIA. Su compute-p1 il tetto e' 3.996 MB per CPU (48 CPU, 185 GB per nodo), e una
+# richiesta sopra il tetto viene respinta da sbatch, non ridotta. La memoria si ottiene
+# chiedendo piu' CPU. Scoperto l'11/9/2026 al primo lancio vero.
 #SBATCH --job-name=ipft-prep
-#SBATCH --partition=compute
+#SBATCH --partition=compute-p1   # 'compute' e' in drain: zero nodi
 #SBATCH --time=02:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=4G
+#SBATCH --mem-per-cpu=3900M   # 8 x 3,9 GB = 31 GB: la popolazione intera in memoria
 #SBATCH --output=logs/prep-%j.out
 
 set -u

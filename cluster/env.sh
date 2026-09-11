@@ -14,7 +14,7 @@
 #   IPFT_JAVA_HOME   a JDK 25                               default: $HOME/jdk-25
 #   IPFT_MODULES     module names to load                   default: "2026 cpu python"
 #   IPFT_ACCOUNT     SLURM account for --account            default: unset (sbatch decides)
-#   IPFT_PARTITION   SLURM partition                        default: compute
+#   IPFT_PARTITION   SLURM partition                        default: compute-p1
 #
 # The one that must be right is IPFT_OUTPUT_ROOT. A MATSim run writes ~600 MB and a
 # campaign is tens of GB: on a home directory with a 30 GB quota it fills the quota
@@ -40,7 +40,7 @@ export IPFT_OUTPUT_ROOT="${IPFT_OUTPUT_ROOT:-$IPFT_SCRATCH/TesiOutputs}"
 export IPFT_VENV="${IPFT_VENV:-$IPFT_SCRATCH/ipft-venv}"
 export IPFT_JAVA_HOME="${IPFT_JAVA_HOME:-$HOME/jdk-25}"
 export IPFT_MODULES="${IPFT_MODULES-2026 cpu python}"
-export IPFT_PARTITION="${IPFT_PARTITION:-compute}"
+export IPFT_PARTITION="${IPFT_PARTITION:-compute-p1}"
 
 # Modules: absent on a plain workstation, and a cluster that does not use Lmod is not
 # an error either - the JDK and the venv are found by path, not by module.

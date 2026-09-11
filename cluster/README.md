@@ -70,7 +70,7 @@ export IPFT_OUTPUT_ROOT=$IPFT_SCRATCH/TesiOutputs
 export IPFT_JAVA_HOME=$HOME/jdk-25
 export IPFT_MODULES="2026 cpu python"   # empty string to load none
 export IPFT_ACCOUNT=education-<faculty>-<programme>
-export IPFT_PARTITION=compute
+export IPFT_PARTITION=compute-p1   # 'compute' is drained on DelftBlue
 ```
 
 Find your account name with:
@@ -179,6 +179,9 @@ task, three tasks to a node.
 |---|---|
 | `UnsupportedClassVersionError` | the JDK on PATH is older than 25. `echo $JAVA_HOME`; re-run `bootstrap.sh` |
 | job dies instantly, no output | `--mem-per-cpu` unset; on DelftBlue it defaults to 1 MB |
+| `sbatch: ... doesn't specify the amount of memory per-cpu` | DelftBlue refuses `--mem`; memory must be given per CPU with `--mem-per-cpu` |
+| `sbatch: ... exceeds the available memory per CPU (3996 MB)` | on `compute-p1` the ceiling is 3,996 MB per CPU and a request above it is **rejected**, not trimmed. Ask for more CPUs to get more memory: every script here uses `--mem-per-cpu=3900M` and scales `--cpus-per-task` |
+| job stays `PENDING` forever | `--partition=compute`: on DelftBlue that partition is drained, zero nodes. Use `compute-p1` |
 | runs get slower and slower | undersized heap. It never fails, it thrashes the collector. Check `max: NNNN MB` in the run's own logfile |
 | `no such file: .../output_plans...` from the warm generator | the equilibration it wants has not run, or ran under a different PCE tag. There is deliberately no fallback: branching off the wrong equilibrium produces numbers that look right |
 | the whole array runs 8 tasks at a time | that is the account's job limit, not a bug — see `sacctmgr` above |

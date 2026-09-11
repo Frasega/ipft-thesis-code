@@ -21,14 +21,17 @@
 # events file, so the array can be resubmitted after a partial failure and only the
 # missing cells are redone.
 #
+# MEMORIA. Su compute-p1 il tetto e' 3.996 MB per CPU (48 CPU, 185 GB per nodo), e una
+# richiesta sopra il tetto viene respinta da sbatch, non ridotta. La memoria si ottiene
+# chiedendo piu' CPU. Scoperto l'11/9/2026 al primo lancio vero.
 #SBATCH --job-name=ipft-surface
-#SBATCH --partition=compute
+#SBATCH --partition=compute-p1   # 'compute' e' in drain: zero nodi
 #SBATCH --time=04:00:00
 #SBATCH --array=0-7
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=24
-#SBATCH --mem-per-cpu=4G
+#SBATCH --mem-per-cpu=3900M   # 24 x 3,9 GB = 94 GB: 8 run da 9 GB di heap + la JVM
 #SBATCH --output=logs/surface-%A_%a.out
 
 set -u

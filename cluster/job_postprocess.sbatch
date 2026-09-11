@@ -9,13 +9,16 @@
 # cell's failure does not take the batch down), so --jobs is real parallelism and the
 # 8 CPUs asked for here are used.
 #
+# MEMORIA. Su compute-p1 il tetto e' 3.996 MB per CPU (48 CPU, 185 GB per nodo), e una
+# richiesta sopra il tetto viene respinta da sbatch, non ridotta. La memoria si ottiene
+# chiedendo piu' CPU. Scoperto l'11/9/2026 al primo lancio vero.
 #SBATCH --job-name=ipft-post
-#SBATCH --partition=compute
+#SBATCH --partition=compute-p1   # 'compute' e' in drain: zero nodi
 #SBATCH --time=03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem-per-cpu=8G
+#SBATCH --cpus-per-task=12
+#SBATCH --mem-per-cpu=3900M   # 12 x 3,9 GB = 47 GB: 8 celle analizzate insieme
 #SBATCH --output=logs/post-%j.out
 
 set -u
