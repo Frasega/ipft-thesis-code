@@ -27,16 +27,29 @@ ipft_check || exit 1
 
 RUNS="${1:?usage: job_postprocess.sbatch <runs dir name> <output dir name>}"
 OUT="${2:?usage: job_postprocess.sbatch <runs dir name> <output dir name>}"
+# Optional. A campaign that re-measures only the SCENARIO cells - the handling-time
+# sensitivities have alpha 0.5 and 1 and no alpha 0 of their own - reuses the alpha=0
+# runs of the main campaign: with no freight on board, the handling time does not exist.
+BASE="${3:-}"
+# Optional, default line 44. It MUST match the runs: line-87 runs analysed as line 44
+# come back with line-44 trips, stops, parcels and bus ids and nothing complains - line
+# 44 runs in every Rotterdam simulation, so every lookup succeeds.
+SCEN="${4:-rotterdam}"
+EXTRA=()
+[ -n "$BASE" ] && EXTRA+=(--baseline-dir "$IPFT_OUTPUT_ROOT/$BASE")
+echo "[post] runs=$RUNS  out=$OUT  scenario=$SCEN  baselines=${BASE:-(same dir)}"
 
 # --dwell-in-matsim tells the bus term to measure the standing time from the stop
 # events instead of charging it a priori. Pointing it at pre-dwell runs would collapse
 # the idle component to ~0 without saying so, which is why the flag is explicit and why
 # test_dwell_idle_guard.py exercises that branch.
 srun python python_pipeline/rotterdam_surface_robust.py \
+    --scenario "$SCEN" \
     --runs-dir "$IPFT_OUTPUT_ROOT/$RUNS" \
     --out "output/$OUT" \
     --dwell-in-matsim \
-    --jobs 8
+    --jobs 8 \
+    ${EXTRA[@]+"${EXTRA[@]}"}
 
 echo
 echo "results in $IPFT_PROJECT/output/$OUT - copy them off scratch, it is not backed up:"
